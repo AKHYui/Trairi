@@ -12,6 +12,7 @@ dist/
 
 # 私有部署/调试脚本（含真实 IP、密码路径）
 .*.sh
+.private/
 wsl-deploy
 docs/research/
 docs/security-audit-*.md

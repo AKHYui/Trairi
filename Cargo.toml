@@ -2,7 +2,7 @@
 name = "trairi"
 version = "0.2.0"
 edition = "2024"
-description = "A single-binary reverse proxy and WireGuard overlay network (frp/Tailscale-style) written in Rust"
+description = "A single-binary reverse proxy and WireGuard overlay networking tool written in Rust"
 license = "MIT"
 repository = "https://github.com/AKHYui/Trairi"
 readme = "README.md"

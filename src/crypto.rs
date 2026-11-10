@@ -1,6 +1,6 @@
 //! 连接加密与认证原语。
 //!
-//! 设计（与 frp 的 crypto 层思路一致）：
+//! 设计：
 //! 1. 客户端先发一帧明文 `HelloRequest`，带随机盐和 HMAC 签名；
 //! 2. 双方用 `HKDF-SHA256(token, salt, "trairi/1 aead")` 派生 32 字节密钥；
 //! 3. 之后所有字节都以 ChaCha20-Poly1305 记录帧传输。

@@ -5,11 +5,10 @@
 [![CI](https://github.com/AKHYui/Trairi/actions/workflows/ci.yml/badge.svg)](https://github.com/AKHYui/Trairi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-一个用 Rust 写的内网穿透工具，功能对标 **frp**，但和 frp 不同的是：
+一个用 Rust 写的内网穿透与异地组网工具。
 
-> **没有 frpc / frps 两个可执行文件。**
-> 同一个二进制，靠配置文件里的 `mode` 或命令行子命令决定这次当服务端还是客户端。
-> （和 Xray 那种 `run -c config` 的用法一致。）
+> **只有一个可执行文件，没有独立的客户端/服务端二进制。**
+> 靠配置文件里的 `mode` 或命令行子命令决定这次当服务端还是客户端。
 
 ```bash
 trairi server -c server.yaml     # 当服务端
@@ -86,24 +85,24 @@ ssh -L 7500:127.0.0.1:7500 你的服务器
 
 ---
 
-## 2. 功能对照（相对 frp）
+## 2. 功能一览
 
-| frp 的能力 | Trairi | 说明 |
+| 功能 | 状态 | 说明 |
 |---|---|---|
-| tcp 代理 | ✅ | `type = "tcp"` |
-| udp 代理 | ✅ | `type = "udp"` |
-| http 虚拟主机（按域名） | ✅ | `type = "http"` + `custom_domains` / `subdomain` |
-| https 虚拟主机（按 SNI） | ✅ | `type = "https"`，**TLS 端到端不终止** |
-| stcp（密钥访问） | ✅ | 服务端不监听端口，靠 `sk` 鉴权 |
+| TCP 代理 | ✅ | `type = "tcp"` |
+| UDP 代理 | ✅ | `type = "udp"` |
+| HTTP 虚拟主机（按域名） | ✅ | `type = "http"` + `custom_domains` / `subdomain` |
+| HTTPS 虚拟主机（按 SNI） | ✅ | `type = "https"`，**TLS 端到端不终止** |
+| 密钥访问 TCP | ✅ | `type = "stcp"`；服务端不监听端口，靠 `sk` 鉴权 |
 | 访问者 visitor | ✅ | `visitors` 列表 |
-| socks5 插件 | ✅ | `type = "socks5"`，内置实现，不用另起程序 |
-| http_proxy 插件 | ✅ | `type = "http_proxy"`（支持 CONNECT 隧道） |
-| static_file 插件 | ✅ | `type = "static_file"`，内置静态站 + Basic Auth |
-| 多路复用（smux/yamux） | ✅ | 用 `smux`，一条连接跑所有代理 |
+| SOCKS5 插件 | ✅ | `type = "socks5"`，内置实现 |
+| HTTP 代理插件 | ✅ | `type = "http_proxy"`（支持 CONNECT 隧道） |
+| 静态文件插件 | ✅ | `type = "static_file"`，内置静态站 + Basic Auth |
+| 多路复用（smux） | ✅ | 一条连接跑所有代理 |
 | 传输协议 tcp/tls/ws/wss | ✅ | 服务端**单端口自动嗅探**，客户端可随时切换 |
 | 连接加密（AEAD） | ✅ | ChaCha20-Poly1305 + HKDF 派生密钥 |
 | 流压缩 | ✅ | snappy |
-| token 认证 | ✅ | HMAC-SHA256(token, salt+时间戳) 防重放 |
+| token 认证 | ✅ | HMAC-SHA256 覆盖完整 Hello，带重放保护 |
 | 心跳 / 超时剔除 | ✅ | 双向心跳 |
 | 代理健康检查 | ✅ | `health_check_type = tcp/http`，状态回传服务端 |
 | 负载均衡（group） | ✅ | 同 `group` + `group_key` + `remote_port`，服务端轮询健康成员 |
@@ -112,11 +111,9 @@ ssh -L 7500:127.0.0.1:7500 你的服务器
 | 端口白名单 | ✅ | `allow_ports = "7001-7200"` |
 | 面板 + JSON API | ✅ | 内置，无前端构建依赖 |
 | 客户端管理 API（reload/stop） | ✅ | `webServer` |
-| kcp / quic 传输 | ❌ | 未实现，推荐用 ws/wss 代替（穿 CDN/反代效果更好） |
-| xtcp（P2P 打洞） | ❌ | 未实现；同类需求用 stcp（走服务器中转） |
-| tcpmux | ❌ | 未实现 |
-| https2http / http2https 等插件 | ❌ | 未实现；可用 nginx 之类在前面兜 |
-| Prometheus 指标 | ❌ | 未实现；面板 API 可自己接 |
+
+暂未实现：kcp/quic 传输、P2P 打洞、smux 之外的通用 TCP 多路复用、Prometheus 指标。
+面板 JSON API 可以直接接入自有监控。
 
 ---
 
@@ -211,7 +208,7 @@ visitors:           # 访问者列表
 | `run_id` | 自动 | 客户端标识，同 ID 重连会踢掉旧连接 |
 | `user` | `""` | 备注用 |
 | `protocol` | `tcp` | `tcp` / `tls` / `ws` / `wss` |
-| `tls_enable` | `false` | frp 兼容写法，等价于 `protocol = "tls"` |
+| `tls_enable` | `false` | 等价于 `protocol = "tls"` |
 | `tls_server_name` | `server_addr` | TLS 校验用名字 |
 | `tls_cert_file` | `""` | 自定义 CA |
 | `tls_insecure` | `false` | 跳过证书校验 |
@@ -236,7 +233,7 @@ visitors:           # 访问者列表
 | `remote_port` | tcp/udp 对外端口；0 表示由服务端从 `allow_ports` 分配 |
 | `custom_domains` | http/https 的域名列表 |
 | `subdomain` | 配合服务端 `subdomain_host` |
-| `sk` | stcp 密钥 |
+| `sk` | 密钥访问 TCP（`stcp`）的密钥 |
 | `group` / `group_key` | 负载均衡分组（同组同端口共享监听） |
 | `weight` | 预留权重字段 |
 | `bandwidth_limit` | 如 `"5MB"`、`"512KB"`；空=不限 |
@@ -254,7 +251,7 @@ visitors:           # 访问者列表
 |---|---|
 | `name` | 必填 |
 | `type` | 目前只有 `stcp` |
-| `server_name` | 目标 stcp 代理的名字 |
+| `server_name` | 目标密钥访问 TCP 代理的名字 |
 | `sk` | 与目标代理一致的密钥 |
 | `bind_addr` / `bind_port` | 本地监听地址 |
 
@@ -312,7 +309,7 @@ cargo clippy --all-targets
 - HTTP 虚拟主机路由、未匹配域名的 404
 - UDP 转发
 - 内置 SOCKS5
-- stcp + visitor、错误 sk 被拒绝
+- 密钥访问 TCP + visitor、错误 sk 被拒绝
 - PROXY protocol v1 落到后端
 - 面板 `/api/overview`（带认证）
 - 分组负载均衡轮询
@@ -365,7 +362,7 @@ cargo clippy --all-targets
 ## 9. 已知限制
 
 - **没有 kcp / quic**：需要穿 CDN 或强对抗丢包时用 `ws`/`wss`。
-- **没有 xtcp P2P 打洞**：stcp 走服务器中转，带宽受服务器限制。
+- **没有 P2P 打洞**：密钥访问 TCP 模式走服务器中转，带宽受服务器限制。
 - **HTTP 虚拟主机是连接级路由**：按首个请求的 Host 选后端，同一连接内的后续请求不再重新匹配（这样 keep-alive 和 WebSocket 都能正常工作）。
 - **`http_proxy` 插件只支持 CONNECT**（HTTPS 隧道），普通 `GET http://...` 明文代理未实现。
 - **加密/压缩是连接级开关**：`proxies` 列表 上的 `use_encryption` / `use_compression` 目前不单独生效。
@@ -398,14 +395,14 @@ src/
 └─ plugin/mod.rs        socks5 / http_proxy / static_file
 tests/integration.rs    端到端测试
 examples/               服务端 / 客户端 YAML 配置示例
-docs/                   调研与设计文档
+scripts/                network namespace 与 NAT 测试辅助脚本
 ```
 
 ---
 
 ## 11. 异地组网（overlay）
 
-Trairi 内置了一套**类似 Tailscale 的异地组网能力**：把多台机器组成一个虚拟局域网，
+Trairi 内置异地组网能力：把多台机器组成一个虚拟局域网，
 每台机器分到一个 `10.144.144.x` 的虚拟 IP，互相直接 `ping` 通，
 不需要改路由器、不需要公网 IP。
 
@@ -480,7 +477,7 @@ ping 10.144.144.3        # 直接 ping 对方虚拟 IP
 | 端点学习（服务端观测客户端公网地址并分发） | ✅ |
 | 本机路由自动配置与退出清理 | ✅ |
 | 全 mesh 直连（至少一方可达时） | ✅ |
-| **DERP 式 TCP 中继兜底**（直连打不通时自动切换） | ✅ |
+| **TCP 中继兜底**（直连打不通时自动切换） | ✅ |
 | CLI：`trairi overlay status` / `trairi overlay cleanup` | ✅ |
 | **服务端自身作为组网节点**（`overlay.node_ipv4`） | ✅ |
 | **STUN（NAT 映射探测）** | ✅ |
@@ -558,9 +555,6 @@ trairi overlay cleanup --interface trairi0   # 进程被强杀后清理残留网
 - 退出时会删除自己加的 `/32` 路由；如果进程被强杀，可用系统命令清理，
   虚拟网卡本身会随进程退出自动销毁；
 - 虚拟网段不要和本地真实网段冲突（默认 `10.144.144.0/24`，可通过 `ipv4_pool` 改）。
-
-设计取舍与选型对比见 [docs/overlay-architecture-options.md](docs/overlay-architecture-options.md)
-和 [docs/easytier-overlay-feasibility.md](docs/easytier-overlay-feasibility.md)。
 
 ### P3（子网路由 / ACL / MagicDNS）
 

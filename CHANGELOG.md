@@ -24,4 +24,4 @@ Security hardening release.
 ## 0.1.0
 
 Initial single-binary server/client, TCP/UDP/HTTP vhost forwarding, STUN,
-WireGuard overlay, DERP-style TCP relay, and Windows/Linux builds.
+WireGuard overlay, TCP relay fallback, and Windows/Linux builds.

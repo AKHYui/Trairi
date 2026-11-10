@@ -5,13 +5,11 @@
 [![CI](https://github.com/AKHYui/Trairi/actions/workflows/ci.yml/badge.svg)](https://github.com/AKHYui/Trairi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A single-binary reverse proxy and overlay networking tool written in Rust, in
-the spirit of **frp** — with one important difference:
+A single-binary reverse proxy and overlay networking tool written in Rust.
 
-> **There is no separate `frpc` / `frps` binary.**
-> One executable decides whether it runs as a server or a client from the
-> `mode` field in the config, or from the CLI subcommand.
-> (Similar to Xray's `run -c config` style.)
+> **One executable, no separate client/server binaries.**
+> The `mode` field in the config or the CLI subcommand decides whether it runs
+> as a server or a client.
 
 ```bash
 trairi server -c server.yaml     # run as a server
@@ -89,20 +87,20 @@ ssh -L 7500:127.0.0.1:7500 your-server
 
 ---
 
-## 2. Feature comparison with frp
+## 2. Feature overview
 
-| frp feature | Trairi | Notes |
+| Feature | Status | Notes |
 |---|---|---|
 | TCP proxy | ✅ | `type = "tcp"` |
 | UDP proxy | ✅ | `type = "udp"` |
 | HTTP virtual host (by domain) | ✅ | `type = "http"` + `custom_domains` / `subdomain` |
 | HTTPS virtual host (by SNI) | ✅ | `type = "https"`, **TLS is passed through end-to-end** |
-| stcp (secret-key access) | ✅ | No public listener; `sk` authentication |
-| visitor | ✅ | `visitors` list |
+| Secret-key TCP access | ✅ | `type = "stcp"`; no public listener, `sk` authentication |
+| Visitor | ✅ | `visitors` list |
 | SOCKS5 plugin | ✅ | `type = "socks5"`, built in |
 | HTTP proxy plugin | ✅ | `type = "http_proxy"` (CONNECT tunnels) |
-| static file plugin | ✅ | `type = "static_file"` with Basic Auth |
-| Multiplexing (smux/yamux) | ✅ | `smux`; one connection carries all proxies |
+| Static file plugin | ✅ | `type = "static_file"` with Basic Auth |
+| Multiplexing (smux) | ✅ | One connection carries all proxies |
 | tcp/tls/ws/wss transports | ✅ | Single-port auto-sniffing; clients can switch freely |
 | Connection encryption (AEAD) | ✅ | ChaCha20-Poly1305 + HKDF |
 | Stream compression | ✅ | snappy |
@@ -115,11 +113,10 @@ ssh -L 7500:127.0.0.1:7500 your-server
 | Port allowlist | ✅ | `allow_ports = "7001-7200"` |
 | Dashboard + JSON API | ✅ | Built in, no frontend build step |
 | Client management API | ✅ | `webServer` (`reload` / `stop`) |
-| kcp / quic transport | ❌ | Not implemented; `ws`/`wss` works better through CDNs |
-| xtcp (P2P hole punching) | ❌ | Not implemented; use stcp through the server |
-| tcpmux | ❌ | Not implemented |
-| https2http / http2https plugins | ❌ | Not implemented; put nginx in front if needed |
-| Prometheus metrics | ❌ | Not implemented; the dashboard API can be scraped |
+
+Not implemented: kcp/quic transports, P2P hole punching, generic TCP multiplexing
+outside smux, and Prometheus metrics. The dashboard JSON API can be scraped if
+you need metrics.
 
 ---
 
@@ -225,7 +222,7 @@ visitors:           # visitor definitions
 | `run_id` | auto | Client identity; a new login with the same ID evicts the old one |
 | `user` | `""` | Free-form note |
 | `protocol` | `tcp` | `tcp` / `tls` / `ws` / `wss` |
-| `tls_enable` | `false` | frp-compatible alias for `protocol = "tls"` |
+| `tls_enable` | `false` | Alias for `protocol = "tls"` |
 | `tls_server_name` | `server_addr` | Name used for TLS verification |
 | `tls_cert_file` | `""` | Custom CA |
 | `tls_insecure` | `false` | Skip certificate verification |
@@ -250,7 +247,7 @@ visitors:           # visitor definitions
 | `remote_port` | Public TCP/UDP port; 0 = allocate from `allow_ports` |
 | `custom_domains` | Domains for HTTP/HTTPS proxies |
 | `subdomain` | Used with the server's `subdomain_host` |
-| `sk` | stcp secret key |
+| `sk` | Secret key for secret-key TCP (`stcp`) |
 | `group` / `group_key` | Load-balancing group (same group + port share a listener) |
 | `weight` | Reserved |
 | `bandwidth_limit` | e.g. `"5MB"`, `"512KB"`; empty = unlimited |
@@ -268,7 +265,7 @@ visitors:           # visitor definitions
 |---|---|
 | `name` | Required |
 | `type` | Currently only `stcp` |
-| `server_name` | Target stcp proxy name |
+| `server_name` | Target secret-key TCP proxy name |
 | `sk` | Must match the target proxy |
 | `bind_addr` / `bind_port` | Local listener |
 
@@ -329,7 +326,7 @@ The integration tests start a real server + client in one process and cover:
 - HTTP virtual-host routing and unmatched-domain 404s
 - UDP forwarding
 - Built-in SOCKS5
-- stcp + visitor, wrong `sk` rejection
+- secret-key TCP + visitor, wrong `sk` rejection
 - PROXY protocol v1 reaching the backend
 - Dashboard `/api/overview` with authentication
 - Group load balancing
@@ -399,8 +396,8 @@ See [SECURITY.md](SECURITY.md) for the vulnerability-reporting policy.
 ## 9. Known limitations
 
 - **No kcp / quic**: use `ws`/`wss` for CDN or lossy-network scenarios.
-- **No xtcp P2P hole punching**: stcp goes through the server and is limited by
-  server bandwidth.
+- **No P2P hole punching**: secret-key TCP access goes through the server and is
+  limited by server bandwidth.
 - **HTTP virtual hosts route per connection**: the backend is chosen from the
   first request's `Host`; later requests on the same keep-alive connection are
   not re-routed (this keeps WebSocket/keep-alive working).
@@ -440,14 +437,14 @@ src/
 └─ plugin/mod.rs        socks5 / http_proxy / static_file
 tests/integration.rs    end-to-end tests
 examples/               server/client YAML examples
-docs/                   design and research documents
+scripts/                network-namespace and NAT test helpers
 ```
 
 ---
 
 ## 11. Overlay networking
 
-Trairi includes a **Tailscale-style overlay**: several machines form a virtual
+Trairi includes a built-in overlay network: several machines form a virtual
 LAN, each gets a `10.144.144.x` address, and they can `ping` each other without
 router changes or public IPs.
 
@@ -524,7 +521,7 @@ ping 10.144.144.3        # ping the peer's virtual IP directly
 | Endpoint learning (server observes client public addresses) | ✅ |
 | Automatic host routes and cleanup | ✅ |
 | Full-mesh direct paths (when at least one side is reachable) | ✅ |
-| **DERP-style TCP relay fallback** (automatic when direct fails) | ✅ |
+| **TCP relay fallback** (automatic when direct fails) | ✅ |
 | CLI: `trairi overlay status` / `trairi overlay cleanup` | ✅ |
 | **Server itself as an overlay node** (`overlay.node_ipv4`) | ✅ |
 | **STUN (NAT mapping detection)** | ✅ |
@@ -598,10 +595,6 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
   tools. The virtual adapter itself is destroyed when the process exits.
 - Do not overlap the virtual subnet with a real local subnet (default
   `10.144.144.0/24`; change `ipv4_pool` if needed).
-
-For design trade-offs, see
-[docs/overlay-architecture-options.md](docs/overlay-architecture-options.md) and
-[docs/easytier-overlay-feasibility.md](docs/easytier-overlay-feasibility.md).
 
 ### P3 (subnet routing / ACL / MagicDNS)
 

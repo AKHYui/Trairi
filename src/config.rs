@@ -579,7 +579,7 @@ pub struct ClientConfig {
     pub user: String,
     /// tcp / tls / ws / wss
     pub protocol: TransportProtocol,
-    /// 兼容 frp 写法：为 true 且 protocol=tcp 时自动升级成 tls
+    /// 兼容写法：为 true 且 protocol=tcp 时自动升级成 tls
     pub tls_enable: bool,
     /// 校验服务端证书用的名字（默认等于 server_addr）
     pub tls_server_name: String,
