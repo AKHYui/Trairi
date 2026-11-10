@@ -1,0 +1,166 @@
+# ============================================================================
+# Trairi 客户端配置示例
+#   运行：trairi client -c examples/client.yaml
+# ============================================================================
+
+mode: client
+
+log:
+  level: info
+  file: ""
+
+client:
+  server_addr: 127.0.0.1
+  server_port: 7000
+  token: "replace-with-the-server-token"
+
+  # 传输协议：tcp / tls / ws / wss
+  # 服务端会自动识别，不需要改服务端配置
+  protocol: tcp
+
+  # tls 时的校验设置
+  tls_server_name: ""     # 默认用 server_addr
+  tls_cert_file: ""       # 自签 CA 时填这里
+  tls_insecure: false     # 跳过证书校验（不推荐）
+
+  # ws / wss 的路径（要和反代配置一致）
+  ws_path: /~!trairi
+
+  # 加密与压缩（加密需要 token）
+  use_encryption: true
+  use_compression: false
+
+  heartbeat_interval: 30
+  heartbeat_timeout: 90
+  dial_timeout: 10
+
+  # 只启动这些名字的代理（留空表示全部启动）
+  start: []
+
+# 客户端管理 API（可选）：GET /api/status、/api/reload、/api/stop
+webServer:
+  addr: 127.0.0.1
+  port: 0
+  user: admin
+  password: "换成至少8位强密码"
+
+# ---------------------------------------------------------------------------
+# 代理定义
+# ---------------------------------------------------------------------------
+
+proxies:
+  # 1) 最简单的 TCP 转发：把服务端 7001 转到本地 22
+  - name: ssh
+    type: tcp
+    local_addr: 127.0.0.1:22
+    remote_port: 7001
+
+  # 2) UDP 转发
+  - name: dns
+    type: udp
+    local_addr: 127.0.0.1:53
+    remote_port: 7002
+
+  # 3) HTTP 虚拟主机：按域名分发，需要服务端开 vhost_http_port
+  - name: web
+    type: http
+    local_addr: 127.0.0.1:8080
+    custom_domains:
+      - app.example.com
+      - www.example.com
+    # 也可以只写 subdomain，配合服务端 subdomain_host
+    # subdomain: app
+
+  # 4) HTTPS 虚拟主机：按 SNI 路由，TLS 端到端不终止
+  - name: web-tls
+    type: https
+    local_addr: 127.0.0.1:8443
+    custom_domains:
+      - secure.example.com
+
+  # 5) 内置 SOCKS5：服务端 7003 直接就是一个 socks5 端口
+  - name: socks
+    type: socks5
+    remote_port: 7003
+
+  # 6) 内置静态文件服务：不需要再起本地 web 服务
+  - name: files
+    type: static_file
+    local_path: ./examples/www    # 换成你自己的静态目录
+    custom_domains:
+      - files.example.com
+    http_user: guest
+    http_pwd: guest
+
+  # 7) stcp：不对外暴露端口，只有拿着 sk 的访问者能连
+  - name: secret-rdp
+    type: stcp
+    local_addr: 127.0.0.1:3389
+    sk: a-very-long-shared-secret
+
+  # 8) 带健康检查、限速、负载均衡分组的代理
+  - name: app-a
+    type: tcp
+    local_addr: 127.0.0.1:9001
+    remote_port: 7010
+    group: app
+    group_key: group-secret
+    bandwidth_limit: 5MB      # 每条连接上下行各 5MB/s
+    health_check_type: tcp
+    health_check_interval: 10
+    health_check_timeout: 3
+    health_check_max_failed: 2
+
+  - name: app-b
+    type: tcp
+    local_addr: 127.0.0.1:9002
+    remote_port: 7010         # 同组同端口，由服务端轮询分发
+    group: app
+    group_key: group-secret
+    bandwidth_limit: 5MB
+    health_check_type: http
+    health_check_path: /healthz
+    health_check_interval: 10
+    health_check_timeout: 3
+
+# ---------------------------------------------------------------------------
+# 访问者（用别人的 stcp 代理）
+# ---------------------------------------------------------------------------
+# visitors:
+#   - name: my-rdp
+#     type: stcp
+#     server_name: secret-rdp    # 对方 stcp 代理的名字
+#     sk: a-very-long-shared-secret
+#     bind_addr: 127.0.0.1
+#     bind_port: 13389
+
+# ---------------------------------------------------------------------------
+# 异地组网（overlay）：加入上面的虚拟局域网
+# 需要 root / 管理员权限（要创建虚拟网卡、改路由表）
+# ---------------------------------------------------------------------------
+overlay:
+  enable: false
+  network_name: my-home-net
+  network_secret: 换成一个很长的随机串
+  # 想固定虚拟 IP 就填；留空则由服务端分配
+  ipv4: 10.144.144.2
+  # 0 表示随机端口
+  udp_port: 0
+  # Windows 默认 Trairi，Linux 默认 trairi0
+  interface: trairi0
+  mtu: 1280
+  # 直连不通时是否允许经服务端中继
+  relay: true
+  # 是否尝试直连；设为 false 则一律走中继
+  direct: true
+  # 额外的 STUN 服务器（可选）：配一个和对端不同 IP 的，NAT 类型判断才准
+  stun_servers: []
+  # 把本机所在的内网网段共享给其它节点（P3 子网路由）
+  proxy_networks: []
+  #   - 192.168.1.0/24
+  # 访问控制：按顺序匹配，第一条命中生效，都没命中则放行
+  acl: []
+  #   - "deny 10.144.144.3 -> 10.144.144.2"
+  #   - "deny * -> 192.168.2.0/24"
+  # MagicDNS：把节点主机名写进系统 hosts（需要管理员/root）
+  magic_dns: true

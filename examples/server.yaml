@@ -1,0 +1,81 @@
+# ============================================================================
+# Trairi 服务端配置示例
+#   运行：trairi server -c examples/server.yaml
+#   或者：trairi run -c examples/server.yaml   （由 mode 决定角色）
+# ============================================================================
+
+mode: server
+
+log:
+  # trace / debug / info / warn / error
+  level: info
+  # 留空表示只输出到控制台；填路径则按天滚动写文件
+  file: ""
+  max_days: 7
+
+server:
+  bind_addr: 0.0.0.0
+  # 客户端接入端口（同时自动支持 tcp / tls / ws / wss）
+  bind_port: 7000
+
+  # HTTP 虚拟主机端口（0 表示不开启）
+  vhost_http_port: 8080
+  # HTTPS 虚拟主机端口，按 SNI 路由，不终止 TLS（0 表示不开启）
+  vhost_https_port: 8443
+
+  # 泛域名：客户端配置 subdomain: abc 时，实际域名是 abc.example.com
+  subdomain_host: ""
+
+  # 允许客户端申请的端口范围；为空表示禁止申请固定端口
+  allow_ports: "7001-7200"
+  # 每个客户端最多申请多少个端口，0 表示不限制
+  max_ports_per_client: 64
+
+  # 客户端接入认证超时（秒）
+  authentication_timeout: 10
+  # 心跳超时（秒），超过则认为客户端掉线
+  heartbeat_timeout: 90
+  # 最多允许多少个客户端，0 表示不限制
+  max_clients: 1024
+
+  # 认证 token；客户端必须配置同样的值。生产环境用 32 字节以上随机串。
+  token: "换成-32字节以上随机串"
+  # 强制所有连接加密（默认 true）
+  force_encryption: true
+
+  # 服务端 TLS 证书（当客户端 protocol 为 tls / wss 时需要）
+  tls_cert_file: ""
+  tls_key_file: ""
+
+  # 统一要求给本地服务附加 PROXY protocol（"" / v1 / v2）
+  proxy_protocol_version: ""
+
+dashboard:
+  # 面板端口，0 表示不开启
+  port: 7500
+  # 默认只绑本机；公网访问请走 SSH 隧道或 TLS 反代，不要直接 0.0.0.0
+  bind_addr: 127.0.0.1
+  user: admin
+  # 开启面板时必须配置至少 8 位密码
+  password: "换成至少8位强密码"
+
+# ---------------------------------------------------------------------------
+# 异地组网（overlay）：把这台机器变成虚拟局域网的一个节点/协调点
+# 架构：WireGuard 数据面 + 本服务端做协调（分配虚拟 IP、登记公钥、分发端点）
+# ---------------------------------------------------------------------------
+overlay:
+  # 关掉时完全不生效，不影响上面的端口转发
+  enable: false
+  network_name: my-home-net
+  network_secret: 换成一个很长的随机串
+  # 服务端负责给客户端分配这个网段里的地址
+  ipv4_pool: 10.144.144.0/24
+  # 数据面 UDP 端口（客户端向它打探自己公网地址）
+  udp_port: 11013
+  # 让服务端自己也成为一个组网节点（需要 root/管理员建虚拟网卡）
+  # 填它的虚拟 IP，留空表示服务端只做协调和中继
+  node_ipv4: ""
+  # 服务端节点会额外监听 udp_port + 3
+  # TCP 中继：直连不通时由服务端转发（留空或端口 0 表示关闭）
+  relay_listen: 0.0.0.0:11012
+  mtu: 1280
