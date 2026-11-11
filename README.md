@@ -515,8 +515,8 @@ router changes or public IPs.
    Trairi server: allocate virtual IPs, register public keys, distribute peer tables
 ```
 
-- The data plane is standard WireGuard, so official WireGuard clients can
-  eventually join with little extra work.
+- The data plane is standard WireGuard; the current release does **not** expose a
+  standard WireGuard ingress, so all overlay nodes run Trairi.
 - The control plane reuses the existing Trairi server; no second daemon.
 - Routing is centralized allocation plus per-host `/32` routes; no OSPF, so
   behavior and troubleshooting stay simple.
