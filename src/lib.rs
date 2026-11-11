@@ -19,6 +19,7 @@ pub mod config;
 pub mod crypto;
 pub mod logging;
 pub mod overlay;
+pub mod p2p;
 pub mod plugin;
 pub mod protocol;
 pub mod server;

@@ -177,6 +177,7 @@ pub async fn handle_connection(state: Arc<ServerState>, accepted: Accepted) -> R
             run_id: run_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
             heartbeat_interval: 30,
+            p2p_port: state.cfg.p2p_port,
         };
         write_msg(&mut ctrl, &ControlMsg::LoginResp(resp)).await?;
         bail!("客户端数量达到上限 {}", state.cfg.max_clients);
@@ -202,6 +203,7 @@ pub async fn handle_connection(state: Arc<ServerState>, accepted: Accepted) -> R
         run_id: run_id.clone(),
         server_version: env!("CARGO_PKG_VERSION").to_string(),
         heartbeat_interval: 30,
+        p2p_port: state.cfg.p2p_port,
     };
     write_msg(&mut ctrl, &ControlMsg::LoginResp(resp)).await?;
 
@@ -314,6 +316,18 @@ async fn control_loop(
             ControlMsg::CloseProxy(n) => {
                 state.unregister_proxy(&n.name).await;
             }
+            ControlMsg::P2pRequest { proxy_name } => {
+                if let Err(e) = handle_p2p_request(state, client, proxy_name.as_str()).await {
+                    let _ = client
+                        .send(ControlMsg::P2pInfo {
+                            ok: false,
+                            error: e.to_string(),
+                            proxy_name,
+                            peer_endpoint: String::new(),
+                        })
+                        .await;
+                }
+            }
             ControlMsg::Pong { .. } => {}
             ControlMsg::OverlayRegister(req) => {
                 let assign = match &state.overlay {
@@ -423,6 +437,59 @@ async fn accept_streams(state: Arc<ServerState>, session: Arc<Session>, client: 
             }
         }
     }
+}
+
+/// 处理访问者的 P2P 会合请求：把双方 UDP endpoint 互相交换。
+async fn handle_p2p_request(
+    state: &Arc<ServerState>,
+    visitor: &Arc<ClientHandle>,
+    proxy_name: &str,
+) -> Result<()> {
+    let proxy = {
+        let proxies = state.proxies.read().await;
+        proxies
+            .get(proxy_name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("不存在代理 [{proxy_name}]"))?
+    };
+    if !proxy.p2p {
+        bail!("代理 [{proxy_name}] 不是 P2P 类型");
+    }
+    let rendezvous = {
+        let guard = state.p2p.lock().unwrap();
+        guard
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("服务端未启用 P2P（p2p_port=0）"))?
+    };
+    let owner_ep = rendezvous
+        .endpoint(&proxy.client.run_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("代理持有者还没有 P2P UDP endpoint"))?;
+    let visitor_ep = rendezvous
+        .endpoint(&visitor.run_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("访问者还没有 P2P UDP endpoint"))?;
+
+    visitor
+        .send(ControlMsg::P2pInfo {
+            ok: true,
+            error: String::new(),
+            proxy_name: proxy_name.to_string(),
+            peer_endpoint: owner_ep.to_string(),
+        })
+        .await;
+    if !proxy
+        .client
+        .send(ControlMsg::P2pPeer {
+            proxy_name: proxy_name.to_string(),
+            peer_endpoint: visitor_ep.to_string(),
+        })
+        .await
+    {
+        bail!("无法通知代理持有者");
+    }
+    tracing::info!("P2P 会合 [{proxy_name}]: owner={owner_ep} visitor={visitor_ep}");
+    Ok(())
 }
 
 /// stcp 访问者连接：校验 sk 后，向代理持有者要一条 work 连接并桥接。

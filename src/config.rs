@@ -36,6 +36,7 @@ pub enum ProxyKind {
     Http,
     Https,
     Stcp,
+    P2p,
     Socks5,
     #[serde(rename = "http_proxy")]
     HttpProxy,
@@ -52,6 +53,7 @@ impl ProxyKind {
             ProxyKind::Http | ProxyKind::StaticFile => WireKind::Http,
             ProxyKind::Https => WireKind::Https,
             ProxyKind::Stcp => WireKind::Stcp,
+            ProxyKind::P2p => WireKind::Stcp,
         }
     }
 
@@ -70,6 +72,7 @@ impl ProxyKind {
             ProxyKind::Http => "http",
             ProxyKind::Https => "https",
             ProxyKind::Stcp => "stcp",
+            ProxyKind::P2p => "p2p",
             ProxyKind::Socks5 => "socks5",
             ProxyKind::HttpProxy => "http_proxy",
             ProxyKind::StaticFile => "static_file",
@@ -197,6 +200,12 @@ impl Config {
                     if self.server.bind_port == 0 {
                         errors.push("[server].bind_port 必须大于 0".to_string());
                     }
+                    if self.server.kcp
+                        && self.server.p2p_port > 0
+                        && self.server.p2p_port == self.server.bind_port
+                    {
+                        errors.push("server.p2p_port 不能与 kcp 使用的 bind_port 相同".to_string());
+                    }
                     if self.server.token.is_empty() {
                         errors.push(
                             "[server].token 不能为空（公网服务端必须配置认证 token）".to_string(),
@@ -274,9 +283,9 @@ impl Config {
                         ));
                     }
                 }
-                ProxyKind::Stcp => {
+                ProxyKind::Stcp | ProxyKind::P2p => {
                     if p.sk.is_empty() {
-                        errors.push(format!("proxy {} (stcp) 需要 sk", p.name));
+                        errors.push(format!("proxy {} ({}) 需要 sk", p.name, p.kind.as_str()));
                     }
                     if p.local_addr.is_empty() {
                         errors.push(format!("proxy {} 需要 local_addr", p.name));
@@ -401,6 +410,8 @@ pub struct ServerConfig {
     pub bind_port: u16,
     /// 是否在 bind_port 上同时监听 KCP（UDP）
     pub kcp: bool,
+    /// P2P 会合 UDP 端口；0 = 不启用
+    pub p2p_port: u16,
     pub vhost_http_port: u16,
     pub vhost_https_port: u16,
     pub subdomain_host: String,
@@ -427,6 +438,7 @@ impl Default for ServerConfig {
             bind_addr: "0.0.0.0".into(),
             bind_port: 0,
             kcp: true,
+            p2p_port: 0,
             vhost_http_port: 0,
             vhost_https_port: 0,
             subdomain_host: String::new(),
@@ -595,6 +607,8 @@ pub struct ClientConfig {
     /// 跳过服务端证书校验（不推荐）
     pub tls_insecure: bool,
     pub ws_path: String,
+    /// P2P 本地 UDP 绑定端口；0 = 随机
+    pub p2p_udp_port: u16,
     pub use_encryption: bool,
     pub use_compression: bool,
     pub heartbeat_interval: u64,
@@ -620,6 +634,7 @@ impl Default for ClientConfig {
             tls_cert_file: String::new(),
             tls_insecure: false,
             ws_path: "/~!trairi".into(),
+            p2p_udp_port: 0,
             use_encryption: true,
             use_compression: false,
             heartbeat_interval: 30,
@@ -732,6 +747,8 @@ pub struct VisitorConfig {
     pub sk: String,
     pub bind_addr: String,
     pub bind_port: u16,
+    /// P2P 直连失败时是否回退到服务器中继
+    pub p2p_fallback: bool,
 }
 
 impl Default for VisitorConfig {
@@ -743,6 +760,7 @@ impl Default for VisitorConfig {
             sk: String::new(),
             bind_addr: "127.0.0.1".into(),
             bind_port: 0,
+            p2p_fallback: true,
         }
     }
 }

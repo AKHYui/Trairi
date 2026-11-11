@@ -7,6 +7,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 use trairi::config::{
     ClientConfig, Config, Mode, ProxyConfig, ProxyKind, ServerConfig, TransportProtocol,
+    VisitorConfig,
 };
 use trairi::protocol::{HelloRequest, HelloResponse, PROTOCOL_VERSION, read_msg, write_msg};
 
@@ -142,10 +143,8 @@ async fn start(
     // 避免控制端口和代理对外端口复用同一个数字：Linux 会很快复用刚释放的临时端口。
     let server_port = loop {
         let p = free_port();
-        let conflicts = p == vhost_http_port
-            || proxies
-                .iter()
-                .any(|proxy| proxy.remote_port == p as i64);
+        let conflicts =
+            p == vhost_http_port || proxies.iter().any(|proxy| proxy.remote_port == p as i64);
         if !conflicts {
             break p;
         }
@@ -469,6 +468,183 @@ async fn socks5_plugin() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2p_proxy_direct() {
+    let echo = spawn_tcp_echo().await;
+    let server_port = free_port();
+    let p2p_port = free_port();
+    let visitor_port = free_port();
+    let token = "p2p-token";
+
+    let server_cfg = Config {
+        mode: Some(Mode::Server),
+        server: ServerConfig {
+            bind_addr: "127.0.0.1".into(),
+            bind_port: server_port,
+            p2p_port,
+            token: token.into(),
+            allow_ports: "1-65535".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let owner_cfg = Config {
+        mode: Some(Mode::Client),
+        client: ClientConfig {
+            server_addr: "127.0.0.1".into(),
+            server_port,
+            token: token.into(),
+            ..Default::default()
+        },
+        proxies: vec![ProxyConfig {
+            name: "p2p-echo".into(),
+            kind: ProxyKind::P2p,
+            local_addr: format!("127.0.0.1:{echo}"),
+            sk: "p2p-sk".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let visitor_cfg = Config {
+        mode: Some(Mode::Client),
+        client: ClientConfig {
+            server_addr: "127.0.0.1".into(),
+            server_port,
+            token: token.into(),
+            ..Default::default()
+        },
+        visitors: vec![VisitorConfig {
+            name: "p2p-visitor".into(),
+            kind: ProxyKind::P2p,
+            server_name: "p2p-echo".into(),
+            sk: "p2p-sk".into(),
+            bind_addr: "127.0.0.1".into(),
+            bind_port: visitor_port,
+            p2p_fallback: false,
+        }],
+        ..Default::default()
+    };
+
+    let hs = tokio::spawn(async move {
+        let _ = trairi::server::run(server_cfg).await;
+    });
+    wait_port(server_port, Duration::from_secs(5)).await;
+    let ho = tokio::spawn(async move {
+        let _ = trairi::client::run(owner_cfg).await;
+    });
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let hv = tokio::spawn(async move {
+        let _ = trairi::client::run(visitor_cfg).await;
+    });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let mut conn = TcpStream::connect(("127.0.0.1", visitor_port))
+        .await
+        .unwrap();
+    conn.write_all(b"p2p hello").await.unwrap();
+    let mut buf = [0u8; 9];
+    conn.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"p2p hello");
+
+    // 同一个 P2P KCP/smux 会话上复用多条本地连接。
+    for i in 0..3 {
+        let mut c = TcpStream::connect(("127.0.0.1", visitor_port))
+            .await
+            .unwrap();
+        let msg = format!("p2p-{i}");
+        c.write_all(msg.as_bytes()).await.unwrap();
+        let mut b = vec![0u8; msg.len()];
+        c.read_exact(&mut b).await.unwrap();
+        assert_eq!(b, msg.as_bytes());
+    }
+
+    hs.abort();
+    ho.abort();
+    hv.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn p2p_fallback_relay() {
+    let echo = spawn_tcp_echo().await;
+    let server_port = free_port();
+    let visitor_port = free_port();
+    let token = "p2p-token";
+
+    let server_cfg = Config {
+        mode: Some(Mode::Server),
+        server: ServerConfig {
+            bind_addr: "127.0.0.1".into(),
+            bind_port: server_port,
+            p2p_port: 0,
+            token: token.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let owner_cfg = Config {
+        mode: Some(Mode::Client),
+        client: ClientConfig {
+            server_addr: "127.0.0.1".into(),
+            server_port,
+            token: token.into(),
+            ..Default::default()
+        },
+        proxies: vec![ProxyConfig {
+            name: "p2p-relay-echo".into(),
+            kind: ProxyKind::P2p,
+            local_addr: format!("127.0.0.1:{echo}"),
+            sk: "p2p-sk".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let visitor_cfg = Config {
+        mode: Some(Mode::Client),
+        client: ClientConfig {
+            server_addr: "127.0.0.1".into(),
+            server_port,
+            token: token.into(),
+            ..Default::default()
+        },
+        visitors: vec![VisitorConfig {
+            name: "p2p-relay-visitor".into(),
+            kind: ProxyKind::P2p,
+            server_name: "p2p-relay-echo".into(),
+            sk: "p2p-sk".into(),
+            bind_addr: "127.0.0.1".into(),
+            bind_port: visitor_port,
+            p2p_fallback: true,
+        }],
+        ..Default::default()
+    };
+
+    let hs = tokio::spawn(async move {
+        let _ = trairi::server::run(server_cfg).await;
+    });
+    wait_port(server_port, Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ho = tokio::spawn(async move {
+        let _ = trairi::client::run(owner_cfg).await;
+    });
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let hv = tokio::spawn(async move {
+        let _ = trairi::client::run(visitor_cfg).await;
+    });
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let mut conn = TcpStream::connect(("127.0.0.1", visitor_port))
+        .await
+        .unwrap();
+    conn.write_all(b"relay").await.unwrap();
+    let mut buf = [0u8; 5];
+    conn.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"relay");
+
+    hs.abort();
+    ho.abort();
+    hv.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wrong_token_is_rejected() {
     let echo = spawn_tcp_echo().await;
     let remote = free_port();
@@ -616,6 +792,7 @@ async fn stcp_with_visitor() {
             sk: "shared-secret".into(),
             bind_addr: "127.0.0.1".into(),
             bind_port: visitor_port,
+            p2p_fallback: true,
         }],
         ..Default::default()
     };
@@ -699,6 +876,7 @@ async fn stcp_wrong_sk_is_rejected() {
             sk: "wrong-secret".into(),
             bind_addr: "127.0.0.1".into(),
             bind_port: visitor_port,
+            p2p_fallback: true,
         }],
         ..Default::default()
     };

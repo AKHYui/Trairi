@@ -1,6 +1,7 @@
 //! 客户端运行时：连接服务端、登录、注册代理、处理 work 连接、访问者与健康检查。
 
 pub mod overlay;
+pub mod p2p;
 pub mod proxy;
 
 use std::collections::HashMap;
@@ -211,7 +212,7 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
     write_msg(&mut ctrl_w, &ControlMsg::Login(login))
         .await
         .context("发送登录请求失败")?;
-    let server_heartbeat = match read_msg::<_, ControlMsg>(&mut ctrl_r)
+    let (sid, server_heartbeat, server_p2p_port) = match read_msg::<_, ControlMsg>(&mut ctrl_r)
         .await
         .context("读取登录响应失败")?
     {
@@ -219,11 +220,12 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
             ok: true,
             run_id: sid,
             heartbeat_interval,
+            p2p_port,
             ..
         }) => {
             tracing::info!("已登录服务端 {sid}");
-            *info.run_id.lock().unwrap() = sid;
-            heartbeat_interval
+            *info.run_id.lock().unwrap() = sid.clone();
+            (sid, heartbeat_interval, p2p_port)
         }
         ControlMsg::LoginResp(LoginResponse {
             ok: false, error, ..
@@ -239,6 +241,30 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<ControlMsg>(256);
     let (close_tx, close_rx) = oneshot::channel::<()>();
     let (stop_tx, stop_rx) = watch::channel(false);
+
+    // P2P 需要 owner/visitor 至少各有一端配置了 p2p 代理/访问者。
+    let wants_p2p = cfg
+        .proxies
+        .iter()
+        .any(|p| p.kind == crate::config::ProxyKind::P2p)
+        || cfg
+            .visitors
+            .iter()
+            .any(|v| v.kind == crate::config::ProxyKind::P2p);
+    let p2p_node: Option<Arc<p2p::P2pNode>> = if wants_p2p && server_p2p_port > 0 {
+        match p2p::P2pNode::start(&cfg, cc, sid.clone(), server_p2p_port, tx.clone()).await {
+            Ok(node) => Some(node),
+            Err(e) => {
+                tracing::error!("P2P 节点启动失败，将只能使用服务器中继: {e:#}");
+                None
+            }
+        }
+    } else if wants_p2p {
+        tracing::warn!("配置了 P2P，但服务端 p2p_port=0，P2P 不可用");
+        None
+    } else {
+        None
+    };
 
     // ---- 6. 写任务 ----
     tokio::spawn(async move {
@@ -292,6 +318,7 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
         let pending = pending.clone();
         let proxies = proxies.clone();
         let info = info.clone();
+        let p2p_node = p2p_node.clone();
         let dial_timeout = cc.dial_timeout;
         let heartbeat_timeout = Duration::from_secs(cc.heartbeat_timeout.max(10));
         tokio::spawn(async move {
@@ -354,6 +381,33 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
                         tracing::info!("服务端关闭代理 [{}]: {}", n.name, n.error);
                         proxies.lock().unwrap().remove(&n.name);
                     }
+                    ControlMsg::P2pInfo {
+                        ok,
+                        error,
+                        proxy_name,
+                        peer_endpoint,
+                    } => {
+                        if ok {
+                            if let Ok(ep) = peer_endpoint.parse() {
+                                if let Some(node) = &p2p_node {
+                                    node.set_peer(&proxy_name, ep).await;
+                                }
+                            }
+                        } else {
+                            tracing::debug!("P2P 会合 [{proxy_name}] 失败: {error}");
+                        }
+                    }
+                    ControlMsg::P2pPeer {
+                        proxy_name,
+                        peer_endpoint,
+                    } => {
+                        if let Ok(ep) = peer_endpoint.parse() {
+                            if let Some(node) = &p2p_node {
+                                node.set_peer(&proxy_name, ep).await;
+                            }
+                        }
+                    }
+                    ControlMsg::P2pRequest { .. } => {}
                     ControlMsg::Stop => {
                         tracing::info!("服务端要求断开连接");
                         break;
@@ -486,7 +540,14 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
 
     // ---- 10. 访问者 ----
     for v in cfg.visitors.iter().cloned() {
-        match proxy::start_visitor(v.clone(), session.clone(), cc.dial_timeout).await {
+        match proxy::start_visitor(
+            v.clone(),
+            session.clone(),
+            cc.dial_timeout,
+            p2p_node.clone(),
+        )
+        .await
+        {
             Ok(_) => tracing::info!("访问者 [{}] 已启动", v.name),
             Err(e) => tracing::error!("访问者 [{}] 启动失败: {e:#}", v.name),
         }

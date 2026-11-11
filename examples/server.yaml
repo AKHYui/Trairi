@@ -19,6 +19,8 @@ server:
   bind_port: 7000
   # 在同一端口的 UDP 上启用 KCP；UDP 不可用时设为 false
   kcp: true
+  # P2P 会合 UDP 端口；0 = 不启用 P2P
+  p2p_port: 0
 
   # HTTP 虚拟主机端口（0 表示不开启）
   vhost_http_port: 8080

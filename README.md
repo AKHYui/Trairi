@@ -96,6 +96,7 @@ ssh -L 7500:127.0.0.1:7500 your-server
 | HTTP virtual host (by domain) | ✅ | `type = "http"` + `custom_domains` / `subdomain` |
 | HTTPS virtual host (by SNI) | ✅ | `type = "https"`, **TLS is passed through end-to-end** |
 | Secret-key TCP access | ✅ | `type = "stcp"`; no public listener, `sk` authentication |
+| P2P proxy | ✅ | `type = "p2p"`; direct KCP + smux path between owner and visitor, fallback to relay |
 | Visitor | ✅ | `visitors` list |
 | SOCKS5 plugin | ✅ | `type = "socks5"`, built in |
 | HTTP proxy plugin | ✅ | `type = "http_proxy"` (CONNECT tunnels) |
@@ -114,9 +115,8 @@ ssh -L 7500:127.0.0.1:7500 your-server
 | Dashboard + JSON API | ✅ | Built in, no frontend build step |
 | Client management API | ✅ | `webServer` (`reload` / `stop`) |
 
-Not implemented: QUIC, P2P proxy hole punching, generic TCP multiplexing
-outside smux, and Prometheus metrics. The dashboard JSON API can be scraped if
-you need metrics.
+Not implemented: QUIC, generic TCP multiplexing outside smux, and Prometheus
+metrics. The dashboard JSON API can be scraped if you need metrics.
 
 KCP is a reliable-UDP transport, not an encryption layer. Keep
 `force_encryption` / `use_encryption` enabled so the Trairi token and
@@ -204,6 +204,7 @@ visitors:           # visitor definitions
 | `bind_addr` | `0.0.0.0` | Listen address |
 | `bind_port` | — | Client control port (required); KCP uses UDP on the same port |
 | `kcp` | `true` | Enable KCP (reliable UDP) on `bind_port`; disable if UDP is unavailable |
+| `p2p_port` | `0` | UDP rendezvous port for P2P; 0 = P2P disabled |
 | `vhost_http_port` | `0` | HTTP virtual-host port; 0 disables |
 | `vhost_https_port` | `0` | HTTPS virtual-host port (SNI routing); 0 disables |
 | `subdomain_host` | `""` | Wildcard suffix, e.g. `example.com` |
@@ -234,6 +235,7 @@ visitors:           # visitor definitions
 | `use_encryption` | `true` | Encrypt the record layer (requires a token) |
 | `use_compression` | `false` | snappy compression |
 | `heartbeat_interval` | `30` | Heartbeat interval in seconds (0 = use the server's suggestion) |
+| `p2p_udp_port` | `0` | Local P2P UDP bind port; 0 = random |
 | `heartbeat_timeout` | `90` | Heartbeat timeout in seconds |
 | `dial_timeout` | `10` | Connect timeout for the server/local service |
 | `proxy_protocol_version` | `""` | Default PROXY protocol version |
@@ -245,13 +247,13 @@ visitors:           # visitor definitions
 | Key | Description |
 |---|---|
 | `name` | Required, globally unique |
-| `type` | `tcp` / `udp` / `http` / `https` / `stcp` / `socks5` / `http_proxy` / `static_file` |
+| `type` | `tcp` / `udp` / `http` / `https` / `stcp` / `p2p` / `socks5` / `http_proxy` / `static_file` |
 | `local_addr` | Local service `IP:PORT` (plugins may leave it empty) |
 | `local_path` | Root directory for `static_file` |
 | `remote_port` | Public TCP/UDP port; 0 = allocate from `allow_ports` |
 | `custom_domains` | Domains for HTTP/HTTPS proxies |
 | `subdomain` | Used with the server's `subdomain_host` |
-| `sk` | Secret key for secret-key TCP (`stcp`) |
+| `sk` | Secret key for `stcp` / `p2p` |
 | `group` / `group_key` | Load-balancing group (same group + port share a listener) |
 | `weight` | Load-balancing weight for group members (1–1000, default 1) |
 | `bandwidth_limit` | e.g. `"5MB"`, `"512KB"`; empty = unlimited |
@@ -267,10 +269,52 @@ visitors:           # visitor definitions
 | Key | Description |
 |---|---|
 | `name` | Required |
-| `type` | Currently only `stcp` |
-| `server_name` | Target secret-key TCP proxy name |
+| `type` | `stcp` or `p2p` |
+| `server_name` | Target proxy name |
 | `sk` | Must match the target proxy |
 | `bind_addr` / `bind_port` | Local listener |
+| `p2p_fallback` | `true` (default): fall back to the server relay when direct P2P fails |
+
+### P2P proxy
+
+P2P needs a server UDP rendezvous port:
+
+```yaml
+server:
+  p2p_port: 7001       # open UDP 7001; 0 = disabled
+```
+
+Owner client:
+
+```yaml
+proxies:
+  - name: p2p-ssh
+    type: p2p
+    local_addr: 127.0.0.1:22
+    sk: a-shared-secret
+```
+
+Visitor client (runs the Trairi agent and a local listener):
+
+```yaml
+visitors:
+  - name: p2p-ssh-visitor
+    type: p2p
+    server_name: p2p-ssh
+    sk: a-shared-secret
+    bind_addr: 127.0.0.1
+    bind_port: 2222
+    p2p_fallback: true
+```
+
+The server only exchanges endpoints. The owner and visitor punch UDP and use
+KCP + smux for a direct encrypted path; if punching fails, the visitor falls
+back to the normal server relay. The `sk` is used for HMAC authentication and
+to derive the P2P record-layer key.
+
+P2P works best when at least one side has a reachable/public UDP endpoint.
+Symmetric NAT or a UDP-blocking firewall may force relay fallback. One KCP
+session is shared by multiple visitor TCP connections via smux.
 
 ---
 
@@ -320,7 +364,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-Current test suite: 74 unit tests, 15 port-forwarding end-to-end tests, and
+Current test suite: 76 unit tests, 17 port-forwarding end-to-end tests, and
 8 overlay integration tests.
 
 The integration tests start a real server + client in one process and cover:
@@ -400,8 +444,9 @@ See [SECURITY.md](SECURITY.md) for the vulnerability-reporting policy.
 
 - **No QUIC**: KCP is available for reliable-UDP transport; QUIC is not
   implemented yet.
-- **No P2P hole punching**: secret-key TCP access goes through the server and is
-  limited by server bandwidth.
+- **P2P is best-effort**: symmetric NAT, CGNAT, or UDP-blocking firewalls may
+  force relay fallback. P2P uses KCP + smux; the owner and visitor must both
+  run Trairi.
 - **HTTP virtual hosts route per connection**: the backend is chosen from the
   first request's `Host`; later requests on the same keep-alive connection are
   not re-routed (this keeps WebSocket/keep-alive working).

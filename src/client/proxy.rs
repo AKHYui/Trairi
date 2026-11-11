@@ -15,6 +15,8 @@ use crate::protocol::{ControlMsg, ProxyHealthReport, StreamHeader, write_msg};
 use crate::stream::AnyStream;
 use crate::util::Throttle;
 
+use super::p2p::P2pNode;
+
 /// 根据代理配置准备本地服务（插件类型会现起一个本地服务）。
 pub async fn prepare_local(proxy: &ProxyConfig) -> Result<Option<plugin::PluginService>> {
     let svc = match proxy.kind {
@@ -154,14 +156,16 @@ pub async fn start_visitor(
     visitor: VisitorConfig,
     session: Arc<Session>,
     dial_timeout: u64,
+    p2p: Option<Arc<P2pNode>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let addr = format!("{}:{}", visitor.bind_addr, visitor.bind_port);
     let listener = TcpListener::bind(&addr)
         .await
         .with_context(|| format!("访问者 {} 监听 {addr} 失败", visitor.name))?;
     tracing::info!(
-        "访问者 [{}] 已监听 {addr} → stcp 代理 [{}]",
+        "访问者 [{}] 已监听 {addr} → {} 代理 [{}]",
         visitor.name,
+        visitor.kind.as_str(),
         visitor.server_name
     );
 
@@ -178,8 +182,9 @@ pub async fn start_visitor(
             let _ = conn.set_nodelay(true);
             let session = session.clone();
             let v = visitor.clone();
+            let p2p = p2p.clone();
             tokio::spawn(async move {
-                match open_visitor_stream(&session, &v, peer, dial_timeout).await {
+                match open_visitor_path(&session, &v, p2p, peer, dial_timeout).await {
                     Ok(stream) => {
                         crate::util::pipe_bidirectional(conn, stream, None, None).await;
                     }
@@ -190,6 +195,37 @@ pub async fn start_visitor(
     });
 
     Ok(handle)
+}
+
+async fn open_visitor_path(
+    session: &Arc<Session>,
+    visitor: &VisitorConfig,
+    p2p: Option<Arc<P2pNode>>,
+    peer: std::net::SocketAddr,
+    dial_timeout: u64,
+) -> Result<AnyStream> {
+    if visitor.kind == crate::config::ProxyKind::P2p {
+        if let Some(node) = p2p {
+            match node.connect(&visitor.server_name, &visitor.sk).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    tracing::warn!(
+                        "访问者 [{}] P2P 直连失败，回退服务器中继: {e:#}",
+                        visitor.name
+                    );
+                    if !visitor.p2p_fallback {
+                        return Err(e);
+                    }
+                }
+            }
+        } else {
+            tracing::warn!(
+                "访问者 [{}] 没有可用的 P2P 节点，走服务器中继",
+                visitor.name
+            );
+        }
+    }
+    open_visitor_stream(session, visitor, peer, dial_timeout).await
 }
 
 async fn open_visitor_stream(

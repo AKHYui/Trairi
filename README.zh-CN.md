@@ -94,6 +94,7 @@ ssh -L 7500:127.0.0.1:7500 你的服务器
 | HTTP 虚拟主机（按域名） | ✅ | `type = "http"` + `custom_domains` / `subdomain` |
 | HTTPS 虚拟主机（按 SNI） | ✅ | `type = "https"`，**TLS 端到端不终止** |
 | 密钥访问 TCP | ✅ | `type = "stcp"`；服务端不监听端口，靠 `sk` 鉴权 |
+| 代理 P2P | ✅ | `type = "p2p"`；owner/visitor 之间直连 KCP + smux，失败回退中继 |
 | 访问者 visitor | ✅ | `visitors` 列表 |
 | SOCKS5 插件 | ✅ | `type = "socks5"`，内置实现 |
 | HTTP 代理插件 | ✅ | `type = "http_proxy"`（支持 CONNECT 隧道） |
@@ -112,7 +113,7 @@ ssh -L 7500:127.0.0.1:7500 你的服务器
 | 面板 + JSON API | ✅ | 内置，无前端构建依赖 |
 | 客户端管理 API（reload/stop） | ✅ | `webServer` |
 
-暂未实现：QUIC、代理 P2P 打洞、smux 之外的通用 TCP 多路复用、Prometheus 指标。
+暂未实现：QUIC、smux 之外的通用 TCP 多路复用、Prometheus 指标。
 面板 JSON API 可以直接接入自有监控。
 
 KCP 是可靠 UDP 传输，不是加密层；请保持 `force_encryption` / `use_encryption`
@@ -189,6 +190,7 @@ visitors:           # 访问者列表
 | `bind_addr` | `0.0.0.0` | 监听地址 |
 | `bind_port` | — | 客户端接入端口（必填）；KCP 使用同一端口的 UDP |
 | `kcp` | `true` | 在 `bind_port` 上启用 KCP（可靠 UDP）；UDP 不可用时设 false |
+| `p2p_port` | `0` | P2P UDP 会合端口；0 = 关闭 P2P |
 | `vhost_http_port` | `0` | HTTP 虚拟主机端口，0 关闭 |
 | `vhost_https_port` | `0` | HTTPS 虚拟主机端口（SNI 路由），0 关闭 |
 | `subdomain_host` | `""` | 泛域名后缀，如 `example.com` |
@@ -219,6 +221,7 @@ visitors:           # 访问者列表
 | `use_encryption` | `true` | 是否加密（需要 token） |
 | `use_compression` | `false` | 是否 snappy 压缩 |
 | `heartbeat_interval` | `30` | 心跳间隔（秒；0 = 使用服务端建议值） |
+| `p2p_udp_port` | `0` | P2P 本地 UDP 绑定端口；0 = 随机 |
 | `heartbeat_timeout` | `90` | 心跳超时（秒） |
 | `dial_timeout` | `10` | 连接本地服务/服务端超时（秒） |
 | `proxy_protocol_version` | `""` | 默认 PROXY protocol 版本 |
@@ -236,7 +239,7 @@ visitors:           # 访问者列表
 | `remote_port` | tcp/udp 对外端口；0 表示由服务端从 `allow_ports` 分配 |
 | `custom_domains` | http/https 的域名列表 |
 | `subdomain` | 配合服务端 `subdomain_host` |
-| `sk` | 密钥访问 TCP（`stcp`）的密钥 |
+| `sk` | `stcp` / `p2p` 的共享密钥 |
 | `group` / `group_key` | 负载均衡分组（同组同端口共享监听） |
 | `weight` | 分组负载均衡权重（1–1000，默认 1） |
 | `bandwidth_limit` | 如 `"5MB"`、`"512KB"`；空=不限 |
@@ -252,10 +255,49 @@ visitors:           # 访问者列表
 | 字段 | 说明 |
 |---|---|
 | `name` | 必填 |
-| `type` | 目前只有 `stcp` |
-| `server_name` | 目标密钥访问 TCP 代理的名字 |
+| `type` | `stcp` 或 `p2p` |
+| `server_name` | 目标代理名 |
 | `sk` | 与目标代理一致的密钥 |
 | `bind_addr` / `bind_port` | 本地监听地址 |
+| `p2p_fallback` | `true`（默认）：P2P 直连失败时回退服务器中继 |
+
+### P2P 代理
+
+服务端需要单独的 UDP 会合端口：
+
+```yaml
+server:
+  p2p_port: 7001       # 放行 UDP 7001；0 = 关闭
+```
+
+owner 客户端：
+
+```yaml
+proxies:
+  - name: p2p-ssh
+    type: p2p
+    local_addr: 127.0.0.1:22
+    sk: a-shared-secret
+```
+
+visitor 客户端（本机也跑 Trairi，并监听本地端口）：
+
+```yaml
+visitors:
+  - name: p2p-ssh-visitor
+    type: p2p
+    server_name: p2p-ssh
+    sk: a-shared-secret
+    bind_addr: 127.0.0.1
+    bind_port: 2222
+    p2p_fallback: true
+```
+
+服务端只交换双方 UDP endpoint；owner/visitor 打洞成功后走 KCP + smux 直连，
+失败则回退普通服务器中继。`sk` 同时用于 HMAC 认证和派生 P2P 记录层密钥。
+
+P2P 在至少一端有公网/可达 UDP endpoint 时效果最好；对称 NAT 或 UDP 被封会
+回退中继。一个 KCP 会话通过 smux 承载 visitor 侧的多条 TCP 连接。
 
 ---
 
@@ -303,7 +345,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-当前测试规模：74 个单元测试、15 个端口转发端到端测试、8 个 overlay 集成测试。
+当前测试规模：76 个单元测试、17 个端口转发端到端测试、8 个 overlay 集成测试。
 
 集成测试会在同一进程里起真实的 server + client，覆盖：
 
@@ -364,7 +406,7 @@ cargo clippy --all-targets
 ## 9. 已知限制
 
 - **没有 QUIC**：KCP 已支持可靠 UDP 传输；QUIC 暂未实现。
-- **没有 P2P 打洞**：密钥访问 TCP 模式走服务器中转，带宽受服务器限制。
+- **P2P 是尽力而为**：对称 NAT、CGNAT 或 UDP 被封时会回退服务器中继；P2P 要求 owner 和 visitor 都运行 Trairi。
 - **HTTP 虚拟主机是连接级路由**：按首个请求的 Host 选后端，同一连接内的后续请求不再重新匹配（这样 keep-alive 和 WebSocket 都能正常工作）。
 - **`http_proxy` 插件只支持 CONNECT**（HTTPS 隧道），普通 `GET http://...` 明文代理未实现。
 - **加密/压缩是连接级开关**：在 `client.use_encryption` / `client.use_compression` 设置，没有 per-proxy 开关。

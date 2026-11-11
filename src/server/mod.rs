@@ -3,6 +3,7 @@
 pub mod control;
 pub mod dashboard;
 pub mod overlay;
+pub mod p2p;
 pub mod proxy;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -171,6 +172,8 @@ impl ClientHandle {
 pub struct ProxyRuntime {
     pub name: String,
     pub kind: WireKind,
+    /// 是否是 P2P 代理（wire kind 仍映射为 Stcp，用于中继回退）
+    pub p2p: bool,
     pub client: Arc<ClientHandle>,
     pub remote_port: u16,
     pub domains: Vec<String>,
@@ -199,6 +202,7 @@ impl ProxyRuntime {
         Self {
             name: req.name.clone(),
             kind: req.kind.wire(),
+            p2p: req.kind == crate::config::ProxyKind::P2p,
             client,
             remote_port,
             domains: req.custom_domains.clone(),
@@ -239,6 +243,8 @@ pub struct ServerState {
     pub https_port: AtomicU64,
     /// 组网协调器（未启用为 None）
     pub overlay: Option<std::sync::Arc<overlay::OverlayCoordinator>>,
+    /// P2P 会合服务（未启用为 None）
+    pub p2p: StdMutex<Option<Arc<p2p::P2pRendezvous>>>,
     pub server_id: String,
     /// 已成功使用过的 Hello (salt|timestamp)，用于防重放
     pub replay: StdMutex<HashMap<String, Instant>>,
@@ -269,6 +275,7 @@ impl ServerState {
             http_port: AtomicU64::new(0),
             https_port: AtomicU64::new(0),
             overlay,
+            p2p: StdMutex::new(None),
             server_id: crate::util::random_hex(8),
             replay: StdMutex::new(HashMap::new()),
         }))
@@ -632,6 +639,26 @@ pub async fn run(cfg: Config) -> Result<()> {
     };
 
     let state = ServerState::new(server_cfg.clone(), tls.clone(), overlay)?;
+
+    if server_cfg.p2p_port > 0 {
+        match p2p::P2pRendezvous::start(
+            &server_cfg.bind_addr,
+            server_cfg.p2p_port,
+            server_cfg.token.clone(),
+        )
+        .await
+        {
+            Ok(p) => {
+                tracing::info!(
+                    "服务端 P2P 会合 UDP 监听 {}:{}",
+                    server_cfg.bind_addr,
+                    server_cfg.p2p_port
+                );
+                *state.p2p.lock().unwrap() = Some(p);
+            }
+            Err(e) => tracing::error!("P2P 会合启动失败，P2P 不可用: {e:#}"),
+        }
+    }
 
     let bind_addr = format!("{}:{}", server_cfg.bind_addr, server_cfg.bind_port);
     let listener = TcpListener::bind(&bind_addr)

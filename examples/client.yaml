@@ -33,6 +33,8 @@ client:
   heartbeat_interval: 30
   heartbeat_timeout: 90
   dial_timeout: 10
+  # P2P 本地 UDP 端口；0 = 随机
+  p2p_udp_port: 0
 
   # 只启动这些名字的代理（留空表示全部启动）
   start: []

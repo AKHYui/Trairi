@@ -75,6 +75,9 @@ pub struct LoginResponse {
     pub server_version: String,
     /// 服务端建议的心跳间隔（秒）
     pub heartbeat_interval: u64,
+    /// P2P 会合 UDP 端口；0 = 未启用
+    #[serde(default)]
+    pub p2p_port: u16,
 }
 
 /// 注册一个代理。
@@ -239,6 +242,22 @@ pub enum ControlMsg {
     OverlayRegister(OverlayRegister),
     OverlayAssign(OverlayAssign),
     OverlayPeers(OverlayPeers),
+    // ---- P2P ----
+    P2pRequest {
+        proxy_name: String,
+    },
+    P2pInfo {
+        ok: bool,
+        #[serde(default)]
+        error: String,
+        proxy_name: String,
+        #[serde(default)]
+        peer_endpoint: String,
+    },
+    P2pPeer {
+        proxy_name: String,
+        peer_endpoint: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
