@@ -108,6 +108,7 @@ pub enum TransportProtocol {
     Tls,
     Ws,
     Wss,
+    Kcp,
 }
 
 impl TransportProtocol {
@@ -116,6 +117,9 @@ impl TransportProtocol {
     }
     pub fn is_ws(self) -> bool {
         matches!(self, TransportProtocol::Ws | TransportProtocol::Wss)
+    }
+    pub fn is_kcp(self) -> bool {
+        self == TransportProtocol::Kcp
     }
 }
 
@@ -395,6 +399,8 @@ impl Default for LogConfig {
 pub struct ServerConfig {
     pub bind_addr: String,
     pub bind_port: u16,
+    /// 是否在 bind_port 上同时监听 KCP（UDP）
+    pub kcp: bool,
     pub vhost_http_port: u16,
     pub vhost_https_port: u16,
     pub subdomain_host: String,
@@ -420,6 +426,7 @@ impl Default for ServerConfig {
         Self {
             bind_addr: "0.0.0.0".into(),
             bind_port: 0,
+            kcp: true,
             vhost_http_port: 0,
             vhost_https_port: 0,
             subdomain_host: String::new(),

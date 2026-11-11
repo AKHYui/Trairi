@@ -13,6 +13,7 @@ use futures_util::{SinkExt, StreamExt};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_kcp::{KcpConfig, KcpNoDelayConfig, KcpStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -260,11 +261,36 @@ where
 // 客户端拨号
 // ---------------------------------------------------------------------------
 
+/// KCP 参数：流模式 + 低延迟；KCP 只负责可靠 UDP，认证/加密仍由记录层完成。
+pub fn kcp_config() -> KcpConfig {
+    KcpConfig {
+        mtu: 1400,
+        nodelay: KcpNoDelayConfig::fastest(),
+        stream: true,
+        flush_write: true,
+        flush_acks_input: true,
+        ..Default::default()
+    }
+}
+
 /// 建立到服务端的原始连接（已完成 TLS / WS 握手，但还没有做 Trairi 握手）。
 pub async fn dial(cfg: &ClientConfig) -> Result<Stream> {
     let proto = cfg.effective_protocol();
     let addr = format!("{}:{}", cfg.server_addr, cfg.server_port);
     let timeout = Duration::from_secs(cfg.dial_timeout.max(1));
+
+    if proto.is_kcp() {
+        let target = tokio::net::lookup_host(&addr)
+            .await
+            .with_context(|| format!("解析 KCP 服务端地址 {addr} 失败"))?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("KCP 服务端地址 {addr} 没有可用结果"))?;
+        let kcp = tokio::time::timeout(timeout, KcpStream::connect(&kcp_config(), target))
+            .await
+            .map_err(|_| anyhow::anyhow!("连接 KCP 服务端 {addr} 超时"))?
+            .map_err(|e| anyhow::anyhow!("连接 KCP 服务端 {addr} 失败: {e}"))?;
+        return Ok(Box::new(kcp));
+    }
 
     let tcp = tokio::time::timeout(timeout, TcpStream::connect(&addr))
         .await
@@ -273,6 +299,7 @@ pub async fn dial(cfg: &ClientConfig) -> Result<Stream> {
     let _ = tcp.set_nodelay(true);
 
     match proto {
+        TransportProtocol::Kcp => unreachable!("KCP 已在上面处理"),
         TransportProtocol::Tcp => Ok(Box::new(tcp)),
         TransportProtocol::Tls => {
             let tls = tls_connect(tcp, cfg).await?;

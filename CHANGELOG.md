@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added KCP (reliable UDP) transport: `protocol: kcp`; the server listens for
+  KCP on UDP `bind_port` when `server.kcp` is enabled (default true). The
+  existing token/HMAC and ChaCha20-Poly1305 record layer are reused.
 - Relay connections now reconnect automatically with exponential backoff
   (1s → 30s); the old connection cannot clear a newer one.
 - Client/global defaults are applied consistently:

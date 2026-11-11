@@ -234,6 +234,28 @@ async fn tcp_proxy_plain() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tcp_proxy_over_kcp() {
+    let echo = spawn_tcp_echo().await;
+    let remote = free_port();
+    let h = start(
+        vec![tcp_proxy("kcp-echo", echo, remote)],
+        TEST_TOKEN,
+        TransportProtocol::Kcp,
+        false,
+    )
+    .await;
+    wait_proxy(remote).await;
+
+    let mut conn = TcpStream::connect(("127.0.0.1", remote)).await.unwrap();
+    conn.write_all(b"hello over kcp").await.unwrap();
+    let mut buf = [0u8; 14];
+    conn.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello over kcp");
+
+    h.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tcp_proxy_with_encryption() {
     let echo = spawn_tcp_echo().await;
     let remote = free_port();

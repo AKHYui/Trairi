@@ -14,8 +14,8 @@ client:
   server_port: 7000
   token: "replace-with-the-server-token"
 
-  # 传输协议：tcp / tls / ws / wss
-  # 服务端会自动识别，不需要改服务端配置
+  # 传输协议：tcp / tls / ws / wss / kcp
+  # 服务端会自动识别；KCP 使用同一端口的 UDP
   protocol: tcp
 
   # tls 时的校验设置

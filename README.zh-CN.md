@@ -99,7 +99,7 @@ ssh -L 7500:127.0.0.1:7500 你的服务器
 | HTTP 代理插件 | ✅ | `type = "http_proxy"`（支持 CONNECT 隧道） |
 | 静态文件插件 | ✅ | `type = "static_file"`，内置静态站 + Basic Auth |
 | 多路复用（smux） | ✅ | 一条连接跑所有代理 |
-| 传输协议 tcp/tls/ws/wss | ✅ | 服务端**单端口自动嗅探**，客户端可随时切换 |
+| 传输协议 tcp/tls/ws/wss/kcp | ✅ | TCP 在 `bind_port` 上自动嗅探；KCP 使用同一端口的 UDP |
 | 连接加密（AEAD） | ✅ | ChaCha20-Poly1305 + HKDF 派生密钥 |
 | 流压缩 | ✅ | snappy |
 | token 认证 | ✅ | HMAC-SHA256 覆盖完整 Hello，带重放保护 |
@@ -112,8 +112,11 @@ ssh -L 7500:127.0.0.1:7500 你的服务器
 | 面板 + JSON API | ✅ | 内置，无前端构建依赖 |
 | 客户端管理 API（reload/stop） | ✅ | `webServer` |
 
-暂未实现：kcp/quic 传输、P2P 打洞、smux 之外的通用 TCP 多路复用、Prometheus 指标。
+暂未实现：QUIC、代理 P2P 打洞、smux 之外的通用 TCP 多路复用、Prometheus 指标。
 面板 JSON API 可以直接接入自有监控。
+
+KCP 是可靠 UDP 传输，不是加密层；请保持 `force_encryption` / `use_encryption`
+开启，让 Trairi 的 token 认证和 ChaCha20-Poly1305 记录层继续保护数据。
 
 ---
 
@@ -131,9 +134,8 @@ ssh -L 7500:127.0.0.1:7500 你的服务器
 
 ### 建立过程
 
-1. **传输层**：客户端连服务端 `bind_port`，可选 TLS / WebSocket 包装。
-   服务端靠首字节嗅探（`0x16` = TLS，`GET ` = WS）自动识别；嗅探在每连接 task 内完成，
-   首字节和 TLS/WS 握手都有 5 秒超时，单个慢连接不会卡住 accept 循环。
+1. **传输层**：客户端连服务端 `bind_port`。TCP/TLS/WS 自动嗅探；KCP 使用同一端口的 UDP。
+   嗅探在每连接 task 内完成，首字节和 TLS/WS 握手都有 5 秒超时，单个慢连接不会卡住 accept 循环。
 2. **明文握手（协议 v2）**：客户端发 `HelloRequest{salt, timestamp, HMAC(token, 完整握手字段), 是否加密/压缩}`；
    服务端校验时间窗 + HMAC + `(salt,timestamp)` 重放缓存。
 3. **派生密钥**：`HKDF-SHA256(token, salt)`，之后整条连接走 ChaCha20-Poly1305 记录帧；
@@ -185,7 +187,8 @@ visitors:           # 访问者列表
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `bind_addr` | `0.0.0.0` | 监听地址 |
-| `bind_port` | — | 客户端接入端口（必填） |
+| `bind_port` | — | 客户端接入端口（必填）；KCP 使用同一端口的 UDP |
+| `kcp` | `true` | 在 `bind_port` 上启用 KCP（可靠 UDP）；UDP 不可用时设 false |
 | `vhost_http_port` | `0` | HTTP 虚拟主机端口，0 关闭 |
 | `vhost_https_port` | `0` | HTTPS 虚拟主机端口（SNI 路由），0 关闭 |
 | `subdomain_host` | `""` | 泛域名后缀，如 `example.com` |
@@ -207,7 +210,7 @@ visitors:           # 访问者列表
 | `token` | `""` | 与服务端一致 |
 | `run_id` | 自动 | 客户端标识，同 ID 重连会踢掉旧连接 |
 | `user` | `""` | 备注用 |
-| `protocol` | `tcp` | `tcp` / `tls` / `ws` / `wss` |
+| `protocol` | `tcp` | `tcp` / `tls` / `ws` / `wss` / `kcp` |
 | `tls_enable` | `false` | 等价于 `protocol = "tls"` |
 | `tls_server_name` | `server_addr` | TLS 校验用名字 |
 | `tls_cert_file` | `""` | 自定义 CA |
@@ -300,7 +303,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-当前测试规模：74 个单元测试、14 个端口转发端到端测试、8 个 overlay 集成测试。
+当前测试规模：74 个单元测试、15 个端口转发端到端测试、8 个 overlay 集成测试。
 
 集成测试会在同一进程里起真实的 server + client，覆盖：
 
@@ -360,7 +363,7 @@ cargo clippy --all-targets
 
 ## 9. 已知限制
 
-- **没有 kcp / quic**：需要穿 CDN 或强对抗丢包时用 `ws`/`wss`。
+- **没有 QUIC**：KCP 已支持可靠 UDP 传输；QUIC 暂未实现。
 - **没有 P2P 打洞**：密钥访问 TCP 模式走服务器中转，带宽受服务器限制。
 - **HTTP 虚拟主机是连接级路由**：按首个请求的 Host 选后端，同一连接内的后续请求不再重新匹配（这样 keep-alive 和 WebSocket 都能正常工作）。
 - **`http_proxy` 插件只支持 CONNECT**（HTTPS 隧道），普通 `GET http://...` 明文代理未实现。

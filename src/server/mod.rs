@@ -587,6 +587,30 @@ fn port_is_busy(port: u16, udp: bool) -> bool {
     }
 }
 
+async fn serve_kcp(mut listener: tokio_kcp::KcpListener, state: Arc<ServerState>) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer)) => {
+                let accepted = crate::transport::Accepted {
+                    stream: Box::new(stream),
+                    peer,
+                    transport: "kcp",
+                };
+                let st = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = control::handle_connection(st, accepted).await {
+                        tracing::debug!("KCP 连接处理结束: {e:#}");
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::warn!("KCP accept 失败: {e}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 启动
 // ---------------------------------------------------------------------------
@@ -614,6 +638,20 @@ pub async fn run(cfg: Config) -> Result<()> {
         .await
         .with_context(|| format!("监听 {bind_addr} 失败"))?;
     tracing::info!("服务端监听 {bind_addr}（自动嗅探 tcp/tls/ws/wss）");
+
+    if server_cfg.kcp {
+        match tokio_kcp::KcpListener::bind(crate::transport::kcp_config(), &bind_addr).await {
+            Ok(kcp) => {
+                tracing::info!("服务端 KCP UDP 监听 {bind_addr}");
+                let st = state.clone();
+                tokio::spawn(async move { serve_kcp(kcp, st).await });
+            }
+            Err(e) => {
+                // KCP 是可选传输；UDP 端口不可用时不要让 TCP 服务一起启动失败。
+                tracing::error!("KCP UDP 监听 {bind_addr} 失败，KCP 不可用: {e}");
+            }
+        }
+    }
 
     if server_cfg.vhost_http_port > 0 {
         let addr = format!("{}:{}", server_cfg.bind_addr, server_cfg.vhost_http_port);

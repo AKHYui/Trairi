@@ -17,6 +17,8 @@ server:
   bind_addr: 0.0.0.0
   # 客户端接入端口（同时自动支持 tcp / tls / ws / wss）
   bind_port: 7000
+  # 在同一端口的 UDP 上启用 KCP；UDP 不可用时设为 false
+  kcp: true
 
   # HTTP 虚拟主机端口（0 表示不开启）
   vhost_http_port: 8080

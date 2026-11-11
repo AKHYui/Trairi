@@ -101,7 +101,7 @@ ssh -L 7500:127.0.0.1:7500 your-server
 | HTTP proxy plugin | ✅ | `type = "http_proxy"` (CONNECT tunnels) |
 | Static file plugin | ✅ | `type = "static_file"` with Basic Auth |
 | Multiplexing (smux) | ✅ | One connection carries all proxies |
-| tcp/tls/ws/wss transports | ✅ | Single-port auto-sniffing; clients can switch freely |
+| tcp/tls/ws/wss/kcp transports | ✅ | TCP auto-sniffing on `bind_port`; KCP uses UDP on the same port |
 | Connection encryption (AEAD) | ✅ | ChaCha20-Poly1305 + HKDF |
 | Stream compression | ✅ | snappy |
 | Token authentication | ✅ | HMAC-SHA256 over the complete Hello, with replay protection |
@@ -114,9 +114,13 @@ ssh -L 7500:127.0.0.1:7500 your-server
 | Dashboard + JSON API | ✅ | Built in, no frontend build step |
 | Client management API | ✅ | `webServer` (`reload` / `stop`) |
 
-Not implemented: kcp/quic transports, P2P hole punching, generic TCP multiplexing
+Not implemented: QUIC, P2P proxy hole punching, generic TCP multiplexing
 outside smux, and Prometheus metrics. The dashboard JSON API can be scraped if
 you need metrics.
+
+KCP is a reliable-UDP transport, not an encryption layer. Keep
+`force_encryption` / `use_encryption` enabled so the Trairi token and
+ChaCha20-Poly1305 record layer still protect the stream.
 
 ---
 
@@ -134,11 +138,10 @@ you need metrics.
 
 ### Connection setup
 
-1. **Transport**: the client connects to the server's `bind_port`, optionally
-   wrapped in TLS / WebSocket. The server sniffs the first bytes (`0x16` = TLS,
-   `GET ` = WS). Sniffing runs in a per-connection task, and the first-byte,
-   TLS, and WebSocket handshakes all have 5-second timeouts; one slow client
-   cannot block the accept loop.
+1. **Transport**: the client connects to the server's `bind_port`. TCP, TLS and
+   WebSocket are auto-sniffed; KCP uses UDP on the same port. Sniffing runs in a
+   per-connection task, and the first-byte, TLS, and WebSocket handshakes all
+   have 5-second timeouts; one slow client cannot block the accept loop.
 2. **Plaintext handshake (protocol v2)**: the client sends
    `HelloRequest{salt, timestamp, HMAC(token, full handshake fields), flags}`.
    The server checks the clock window, the HMAC, and a `(salt, timestamp)`
@@ -199,7 +202,8 @@ visitors:           # visitor definitions
 | Key | Default | Description |
 |---|---|---|
 | `bind_addr` | `0.0.0.0` | Listen address |
-| `bind_port` | — | Client control port (required) |
+| `bind_port` | — | Client control port (required); KCP uses UDP on the same port |
+| `kcp` | `true` | Enable KCP (reliable UDP) on `bind_port`; disable if UDP is unavailable |
 | `vhost_http_port` | `0` | HTTP virtual-host port; 0 disables |
 | `vhost_https_port` | `0` | HTTPS virtual-host port (SNI routing); 0 disables |
 | `subdomain_host` | `""` | Wildcard suffix, e.g. `example.com` |
@@ -221,7 +225,7 @@ visitors:           # visitor definitions
 | `token` | `""` | Must match the server |
 | `run_id` | auto | Client identity; a new login with the same ID evicts the old one |
 | `user` | `""` | Free-form note |
-| `protocol` | `tcp` | `tcp` / `tls` / `ws` / `wss` |
+| `protocol` | `tcp` | `tcp` / `tls` / `ws` / `wss` / `kcp` |
 | `tls_enable` | `false` | Alias for `protocol = "tls"` |
 | `tls_server_name` | `server_addr` | Name used for TLS verification |
 | `tls_cert_file` | `""` | Custom CA |
@@ -316,7 +320,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-Current test suite: 74 unit tests, 14 port-forwarding end-to-end tests, and
+Current test suite: 74 unit tests, 15 port-forwarding end-to-end tests, and
 8 overlay integration tests.
 
 The integration tests start a real server + client in one process and cover:
@@ -394,7 +398,8 @@ See [SECURITY.md](SECURITY.md) for the vulnerability-reporting policy.
 
 ## 9. Known limitations
 
-- **No kcp / quic**: use `ws`/`wss` for CDN or lossy-network scenarios.
+- **No QUIC**: KCP is available for reliable-UDP transport; QUIC is not
+  implemented yet.
 - **No P2P hole punching**: secret-key TCP access goes through the server and is
   limited by server bandwidth.
 - **HTTP virtual hosts route per connection**: the backend is chosen from the
