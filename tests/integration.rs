@@ -90,8 +90,25 @@ fn first_line(request: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static USED: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+    let used = USED.get_or_init(|| Mutex::new(HashSet::new()));
+
+    // KCP 会在同一个端口号上监听 UDP，所以分配测试端口时要同时确认 TCP/UDP 都空闲；
+    // 同时把端口记下来，避免 Linux 立刻复用刚释放的临时端口造成测试互相干扰。
+    loop {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        if std::net::UdpSocket::bind(("127.0.0.1", port)).is_err() {
+            continue;
+        }
+        let mut set = used.lock().unwrap();
+        if set.insert(port) {
+            return port;
+        }
+    }
 }
 
 struct Harness {
@@ -121,8 +138,18 @@ async fn start(
     } else {
         token
     };
-    let server_port = free_port();
     let vhost_http_port = if with_vhost { free_port() } else { 0 };
+    // 避免控制端口和代理对外端口复用同一个数字：Linux 会很快复用刚释放的临时端口。
+    let server_port = loop {
+        let p = free_port();
+        let conflicts = p == vhost_http_port
+            || proxies
+                .iter()
+                .any(|proxy| proxy.remote_port == p as i64);
+        if !conflicts {
+            break p;
+        }
+    };
 
     let server_cfg = Config {
         mode: Some(Mode::Server),

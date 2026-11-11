@@ -170,27 +170,39 @@ pub fn build_binding_response(request: &[u8], mapped: SocketAddr) -> Option<Vec<
 pub async fn binding(socket: &UdpSocket, server: SocketAddr) -> Result<SocketAddr> {
     let txid = random_txid();
     let req = build_binding_request(&txid);
-    socket
-        .send_to(&req, server)
-        .await
-        .with_context(|| format!("向 STUN {server} 发送失败"))?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut next_send = tokio::time::Instant::now();
 
     let mut buf = [0u8; 1024];
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let now = tokio::time::Instant::now();
+        if now >= next_send {
+            socket
+                .send_to(&req, server)
+                .await
+                .with_context(|| format!("向 STUN {server} 发送失败"))?;
+            next_send = now + Duration::from_millis(500);
+        }
+
+        let left = deadline.saturating_duration_since(now);
         if left.is_zero() {
             bail!("STUN {server} 超时");
         }
-        let (n, from) = tokio::time::timeout(left, socket.recv_from(&mut buf))
+        // UDP 可能丢包：等待一小段时间后重发，而不是只发一次。
+        match tokio::time::timeout(left.min(Duration::from_millis(250)), socket.recv_from(&mut buf))
             .await
-            .map_err(|_| anyhow::anyhow!("STUN {server} 超时"))??;
-        // 只认这个服务端回来的
-        if from.ip() != server.ip() {
-            continue;
-        }
-        if let Some(addr) = parse_binding_response(&buf[..n]) {
-            return Ok(addr);
+        {
+            Ok(Ok((n, from))) => {
+                // 只认这个服务端回来的
+                if from.ip() != server.ip() {
+                    continue;
+                }
+                if let Some(addr) = parse_binding_response(&buf[..n]) {
+                    return Ok(addr);
+                }
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => continue,
         }
     }
 }
