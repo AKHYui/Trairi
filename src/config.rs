@@ -487,7 +487,7 @@ pub struct OverlayConfig {
     pub enable: bool,
     /// 网络名（同一个虚拟局域网的节点必须一致）
     pub network_name: String,
-    /// 网络密钥（同网节点必须一致，同时用作 WireGuard 预共享密钥）
+    /// 网络密钥（同网节点必须一致；用于 overlay 控制面登记和中继认证）
     pub network_secret: String,
     /// 本节点虚拟 IP；客户端留空则由服务端分配
     pub ipv4: String,
@@ -661,8 +661,6 @@ pub struct ProxyConfig {
     /// server（默认）或 client
     pub bandwidth_limit_mode: String,
     pub proxy_protocol_version: String,
-    pub use_encryption: bool,
-    pub use_compression: bool,
     /// static_file 的 basic auth
     pub http_user: String,
     pub http_pwd: String,
@@ -691,8 +689,6 @@ impl Default for ProxyConfig {
             bandwidth_limit: String::new(),
             bandwidth_limit_mode: "server".into(),
             proxy_protocol_version: String::new(),
-            use_encryption: false,
-            use_compression: false,
             http_user: String::new(),
             http_pwd: String::new(),
             health_check_type: String::new(),

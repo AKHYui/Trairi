@@ -17,6 +17,7 @@ struct ClientView {
     run_id: String,
     remote_addr: String,
     hostname: String,
+    user: String,
     os: String,
     arch: String,
     version: String,
@@ -65,6 +66,7 @@ async fn overview(state: &Arc<ServerState>) -> Overview {
             run_id: c.run_id.clone(),
             remote_addr: c.remote_addr.clone(),
             hostname: c.hostname.clone(),
+            user: c.user.clone(),
             os: c.os.clone(),
             arch: c.arch.clone(),
             version: c.version.clone(),
@@ -261,7 +263,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   <section>
     <h2>客户端</h2>
     <table id="tbl-clients">
-      <thead><tr><th>Run ID</th><th>主机名</th><th>系统</th><th>版本</th><th>传输</th><th>在线</th></tr></thead>
+      <thead><tr><th>Run ID</th><th>主机名</th><th>用户</th><th>系统</th><th>版本</th><th>传输</th><th>在线</th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
@@ -303,10 +305,10 @@ async function tick() {
 
     const cb = document.querySelector('#tbl-clients tbody');
     cb.innerHTML = d.clients.length ? d.clients.map(c => `<tr>
-      <td><code>${esc(c.run_id)}</code></td><td>${esc(c.hostname)}</td>
+      <td><code>${esc(c.run_id)}</code></td><td>${esc(c.hostname)}</td><td>${esc(c.user)}</td>
       <td>${esc(c.os)}/${esc(c.arch)}</td><td>${esc(c.version)}</td><td>${esc(c.transport)}</td>
       <td>${fmtDur(c.connected_secs)}</td></tr>`).join('')
-      : '<tr><td colspan="6" class="empty">暂无客户端</td></tr>';
+      : '<tr><td colspan="7" class="empty">暂无客户端</td></tr>';
   } catch (e) {
     document.getElementById('uptime').textContent = '面板连接失败: ' + e;
   }

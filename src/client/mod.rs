@@ -111,6 +111,27 @@ pub async fn run(cfg: Config) -> Result<()> {
     }
 }
 
+/// 将客户端级默认值落到单个代理上；per-proxy 非空值优先。
+fn apply_client_defaults(cc: &ClientConfig, mut pc: ProxyConfig) -> ProxyConfig {
+    if pc.bandwidth_limit.is_empty() {
+        pc.bandwidth_limit = cc.bandwidth_limit.clone();
+    }
+    if pc.proxy_protocol_version.is_empty() {
+        pc.proxy_protocol_version = cc.proxy_protocol_version.clone();
+    }
+    pc
+}
+
+/// 客户端心跳间隔：配置 > 0 时优先，否则用服务端建议值，最小 5 秒。
+fn effective_heartbeat(client_interval: u64, server_interval: u64) -> u64 {
+    if client_interval > 0 {
+        client_interval
+    } else {
+        server_interval
+    }
+    .max(5)
+}
+
 /// 建立一次完整连接并运行到断开。
 async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
     let cc = &cfg.client;
@@ -190,7 +211,7 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
     write_msg(&mut ctrl_w, &ControlMsg::Login(login))
         .await
         .context("发送登录请求失败")?;
-    let heartbeat_secs = match read_msg::<_, ControlMsg>(&mut ctrl_r)
+    let server_heartbeat = match read_msg::<_, ControlMsg>(&mut ctrl_r)
         .await
         .context("读取登录响应失败")?
     {
@@ -202,7 +223,7 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
         }) => {
             tracing::info!("已登录服务端 {sid}");
             *info.run_id.lock().unwrap() = sid;
-            heartbeat_interval.max(5)
+            heartbeat_interval
         }
         ControlMsg::LoginResp(LoginResponse {
             ok: false, error, ..
@@ -211,6 +232,8 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
         }
         other => bail!("登录响应异常: {other:?}"),
     };
+    // 客户端配置优先；0 表示沿用服务端建议值。
+    let heartbeat_secs = effective_heartbeat(cc.heartbeat_interval, server_heartbeat);
     info.connected.store(true, Ordering::Relaxed);
 
     let (tx, mut rx) = mpsc::channel::<ControlMsg>(256);
@@ -369,7 +392,7 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
             tracing::info!("代理 [{}] 不在 start 列表中，跳过", pc.name);
             continue;
         }
-        let mut pc = pc.clone();
+        let mut pc = apply_client_defaults(cc, pc.clone());
 
         match proxy::prepare_local(&pc).await {
             Ok(Some(svc)) => {
@@ -596,4 +619,42 @@ async fn serve_admin(
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_defaults_apply_to_proxy() {
+        let cc = ClientConfig {
+            bandwidth_limit: "5MB".into(),
+            proxy_protocol_version: "v2".into(),
+            ..Default::default()
+        };
+        let pc = ProxyConfig {
+            name: "p".into(),
+            ..Default::default()
+        };
+        let out = apply_client_defaults(&cc, pc);
+        assert_eq!(out.bandwidth_limit, "5MB");
+        assert_eq!(out.proxy_protocol_version, "v2");
+
+        let pc = ProxyConfig {
+            name: "p".into(),
+            bandwidth_limit: "1MB".into(),
+            proxy_protocol_version: "v1".into(),
+            ..Default::default()
+        };
+        let out = apply_client_defaults(&cc, pc);
+        assert_eq!(out.bandwidth_limit, "1MB", "per-proxy 应优先");
+        assert_eq!(out.proxy_protocol_version, "v1");
+    }
+
+    #[test]
+    fn heartbeat_precedence() {
+        assert_eq!(effective_heartbeat(0, 30), 30);
+        assert_eq!(effective_heartbeat(60, 30), 60);
+        assert_eq!(effective_heartbeat(1, 30), 5, "最小 5 秒");
+    }
 }

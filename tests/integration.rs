@@ -810,6 +810,7 @@ async fn dashboard_overview_api() {
             server_addr: "127.0.0.1".into(),
             server_port,
             token: TEST_TOKEN.into(),
+            user: "alice".into(),
             ..Default::default()
         },
         proxies: vec![tcp_proxy("dash-echo", echo, remote)],
@@ -837,6 +838,10 @@ async fn dashboard_overview_api() {
     assert!(resp.contains("200 OK"), "响应: {resp}");
     assert!(resp.contains("\"proxies\""), "响应: {resp}");
     assert!(resp.contains("dash-echo"), "响应: {resp}");
+    assert!(
+        resp.contains("\"user\":\"alice\""),
+        "用户字段未出现在面板: {resp}"
+    );
 
     h0.abort();
     h1.abort();

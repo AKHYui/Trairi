@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Relay connections now reconnect automatically with exponential backoff
+  (1s → 30s); the old connection cannot clear a newer one.
+- Client/global defaults are applied consistently:
+  `client.heartbeat_interval`, `client.bandwidth_limit`, and
+  `client/server.proxy_protocol_version` now take effect; per-proxy values win.
+- `proxies[].weight` is implemented for group load balancing (weighted round-robin).
+- `log.max_days` now limits retained daily log files.
+- `client.user` is shown in the dashboard.
+- Removed the ineffective per-proxy `use_encryption` / `use_compression` fields;
+  encryption and compression remain connection-level.
+
 ## 0.2.0 — 2026-11-10
 
 Security hardening release.

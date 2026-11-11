@@ -40,7 +40,12 @@ pub fn init(cfg: &LogConfig) -> Result<()> {
         .unwrap_or_else(|| "trairi.log".to_string());
     std::fs::create_dir_all(dir).with_context(|| format!("创建日志目录失败: {}", dir.display()))?;
 
-    let appender = tracing_appender::rolling::daily(dir, prefix);
+    let appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(prefix)
+        .max_log_files(cfg.max_days as usize)
+        .build(dir)
+        .context("创建日志文件失败")?;
     let (non_blocking, guard) = tracing_appender::non_blocking(appender);
     // 让后台写线程常驻
     Box::leak(Box::new(guard));

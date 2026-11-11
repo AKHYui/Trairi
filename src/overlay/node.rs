@@ -12,7 +12,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::overlay::device::IpDevice;
-use crate::overlay::relay::RelayClient;
+use crate::overlay::relay::RelayLink;
 use crate::overlay::wg::{Path, SendPaths, WgAction, WgPeer, wg_message_type};
 use crate::overlay::{ipv4_dst, key_to_b64};
 
@@ -181,7 +181,7 @@ pub async fn start_node(
     my_ip: Ipv4Addr,
     mtu: u16,
     initial_peers: Vec<PeerSpec>,
-    relay: Option<RelayClient>,
+    relay: Option<RelayLink>,
 ) -> Result<NodeHandle> {
     let public_key = PublicKey::from(&private).to_bytes();
 
@@ -268,13 +268,17 @@ pub async fn start_node(
     Ok(handle)
 }
 
+fn relay_path_available(relay: &Option<RelayLink>) -> bool {
+    relay.as_ref().is_some_and(|r| r.is_connected())
+}
+
 /// 按路径归属把一批 WireGuard 报文发出去。
 ///
 /// 未锁定时会同时发直连和中继：只发直连会被单向 NAT 吞掉，
 /// 只发中继又会让本来可直连的场景白白绕路。
 async fn send_out(
     socket: &UdpSocket,
-    relay: Option<&RelayClient>,
+    relay: Option<&RelayLink>,
     peer_pubkey: [u8; 32],
     endpoint: Option<SocketAddr>,
     paths: SendPaths,
@@ -306,7 +310,7 @@ fn spawn_device_loop(
     peers: PeerMap,
     mtu: usize,
     mut to_dev_rx: mpsc::Receiver<Vec<u8>>,
-    relay: Option<RelayClient>,
+    relay: Option<RelayLink>,
     routes: Arc<RwLock<Vec<(ipnet::Ipv4Net, Ipv4Addr)>>>,
     acl: Arc<RwLock<crate::overlay::acl::Acl>>,
     my_ip: Ipv4Addr,
@@ -345,7 +349,7 @@ fn spawn_device_loop(
                             let mut g = peer.lock().await;
                             let endpoint = g.endpoint;
                             let pubkey = g.pubkey;
-                            let paths = g.send_paths(relay.is_some());
+                            let paths = g.send_paths(relay_path_available(&relay));
                             let action: WgAction = g.encapsulate(pkt);
                             drop(g);
                             send_out(&socket, relay.as_ref(), pubkey, endpoint, paths, &action.to_net).await;
@@ -375,7 +379,7 @@ fn spawn_udp_receiver(
     stats_rx: Arc<AtomicU64>,
     my_pubkey: [u8; 32],
     _acl: Arc<RwLock<crate::overlay::acl::Acl>>,
-    relay: Option<RelayClient>,
+    relay: Option<RelayLink>,
 ) {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
@@ -440,7 +444,7 @@ fn spawn_udp_receiver(
                         if action.authenticated {
                             g.note_inbound(Path::Direct, wg_message_type(datagram));
                         }
-                        let paths = g.send_paths(relay.is_some());
+                        let paths = g.send_paths(relay_path_available(&relay));
                         (action, paths, g.pubkey)
                     };
                     send_out(
@@ -471,7 +475,7 @@ fn spawn_udp_receiver(
                     if act.authenticated {
                         g.note_inbound(Path::Direct, wg_message_type(datagram));
                         g.endpoint = Some(src);
-                        let paths = g.send_paths(relay.is_some());
+                        let paths = g.send_paths(relay_path_available(&relay));
                         Some((act, paths, g.pubkey))
                     } else {
                         None
@@ -504,7 +508,7 @@ fn spawn_udp_receiver(
 
 /// 中继收到对端报文 -> 解封装 -> 写 TUN；需要回应的握手包仍走中继回去。
 fn spawn_relay_receiver(
-    relay: RelayClient,
+    relay: RelayLink,
     peers: PeerMap,
     to_dev: mpsc::Sender<Vec<u8>>,
     socket: Arc<UdpSocket>,
@@ -549,7 +553,7 @@ fn spawn_timer(
     peers: PeerMap,
     socket: Arc<UdpSocket>,
     stats_tx: Arc<AtomicU64>,
-    relay: Option<RelayClient>,
+    relay: Option<RelayLink>,
     my_pubkey: [u8; 32],
 ) {
     tokio::spawn(async move {
@@ -568,7 +572,7 @@ fn spawn_timer(
                 let mut g = peer.lock().await;
                 let endpoint = g.endpoint;
                 let pubkey = g.pubkey;
-                let paths = g.send_paths(relay.is_some());
+                let paths = g.send_paths(relay_path_available(&relay));
                 let punch_due = g.punch_due();
                 let action = g.tick();
                 drop(g);

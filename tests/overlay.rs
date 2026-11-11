@@ -9,7 +9,7 @@ use tokio::net::{TcpListener, UdpSocket};
 
 use trairi::overlay::device::mock_device;
 use trairi::overlay::node::{PeerSpec, start_node};
-use trairi::overlay::relay::{RelayClient, spawn_relay_server};
+use trairi::overlay::relay::{RelayLink, spawn_relay_server};
 use trairi::overlay::secret_hash;
 
 fn build_ipv4_packet(src: Ipv4Addr, dst: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
@@ -505,12 +505,8 @@ async fn relay_rescues_when_direct_path_is_dead() {
         .await
         .unwrap();
     let relay_addr = format!("127.0.0.1:{relay_port}");
-    let relay_a = RelayClient::connect(&relay_addr, "relay-net", &hash, pub_a)
-        .await
-        .unwrap();
-    let relay_b = RelayClient::connect(&relay_addr, "relay-net", &hash, pub_b)
-        .await
-        .unwrap();
+    let relay_a = RelayLink::new(relay_addr.clone(), "relay-net".into(), hash.clone(), pub_a);
+    let relay_b = RelayLink::new(relay_addr, "relay-net".into(), hash, pub_b);
     // 等两端都完成中继注册
     tokio::time::sleep(Duration::from_millis(200)).await;
 

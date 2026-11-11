@@ -172,7 +172,7 @@ visitors:           # 访问者列表
 | 字段 | 说明 |
 |---|---|
 | `mode` | `"server"` 或 `"client"`；也可用命令行覆盖 |
-| `log` | `level`（trace/debug/info/warn/error）、`file`（空=仅控制台，填路径按天滚动） |
+| `log` | `level`（trace/debug/info/warn/error）、`file`（空=仅控制台，填路径按天滚动）、`max_days`（保留天数） |
 | `server` | 服务端参数 |
 | `client` | 客户端参数 |
 | `dashboard` | 服务端面板 |
@@ -197,7 +197,7 @@ visitors:           # 访问者列表
 | `token` | `""` | 认证口令；**服务端模式必填**，否则启动失败 |
 | `force_encryption` | `true` | 强制加密 |
 | `tls_cert_file` / `tls_key_file` | `""` | 服务端 TLS 证书（PEM） |
-| `proxy_protocol_version` | `""` | 全局要求附加 PROXY protocol（可被代理级覆盖） |
+| `proxy_protocol_version` | `""` | 代理的默认 PROXY protocol 版本（per-proxy 可覆盖） |
 
 ### `client`
 
@@ -215,11 +215,11 @@ visitors:           # 访问者列表
 | `ws_path` | `/~!trairi` | WebSocket 路径 |
 | `use_encryption` | `true` | 是否加密（需要 token） |
 | `use_compression` | `false` | 是否 snappy 压缩 |
-| `heartbeat_interval` | `30` | 心跳间隔（秒） |
+| `heartbeat_interval` | `30` | 心跳间隔（秒；0 = 使用服务端建议值） |
 | `heartbeat_timeout` | `90` | 心跳超时（秒） |
 | `dial_timeout` | `10` | 连接本地服务/服务端超时（秒） |
 | `proxy_protocol_version` | `""` | 默认 PROXY protocol 版本 |
-| `bandwidth_limit` | `""` | 全局限速（目前按代理生效） |
+| `bandwidth_limit` | `""` | 全局限速（作为代理默认值） |
 | `start` | `[]` | 只启动列表中的代理 |
 
 ### `proxies` 列表
@@ -235,11 +235,10 @@ visitors:           # 访问者列表
 | `subdomain` | 配合服务端 `subdomain_host` |
 | `sk` | 密钥访问 TCP（`stcp`）的密钥 |
 | `group` / `group_key` | 负载均衡分组（同组同端口共享监听） |
-| `weight` | 预留权重字段 |
+| `weight` | 分组负载均衡权重（1–1000，默认 1） |
 | `bandwidth_limit` | 如 `"5MB"`、`"512KB"`；空=不限 |
 | `bandwidth_limit_mode` | `server`（默认）或 `client` |
 | `proxy_protocol_version` | `""` / `v1` / `v2` |
-| `use_encryption` / `use_compression` | 目前加密与压缩在连接级别统一开关 |
 | `http_user` / `http_pwd` | `static_file` 的 Basic Auth |
 | `health_check_type` | `tcp` / `http`，空=不检查 |
 | `health_check_path` | http 检查的路径，默认 `/` |
@@ -301,7 +300,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-当前测试规模：70 个单元测试、14 个端口转发端到端测试、8 个 overlay 集成测试。
+当前测试规模：74 个单元测试、14 个端口转发端到端测试、8 个 overlay 集成测试。
 
 集成测试会在同一进程里起真实的 server + client，覆盖：
 
@@ -365,7 +364,7 @@ cargo clippy --all-targets
 - **没有 P2P 打洞**：密钥访问 TCP 模式走服务器中转，带宽受服务器限制。
 - **HTTP 虚拟主机是连接级路由**：按首个请求的 Host 选后端，同一连接内的后续请求不再重新匹配（这样 keep-alive 和 WebSocket 都能正常工作）。
 - **`http_proxy` 插件只支持 CONNECT**（HTTPS 隧道），普通 `GET http://...` 明文代理未实现。
-- **加密/压缩是连接级开关**：`proxies` 列表 上的 `use_encryption` / `use_compression` 目前不单独生效。
+- **加密/压缩是连接级开关**：在 `client.use_encryption` / `client.use_compression` 设置，没有 per-proxy 开关。
 - **服务端不支持热重载**：改完配置重启进程；客户端支持 `/api/reload`。
 - **协议 v2 不向下兼容**：v1 客户端会因协议版本不一致被拒绝，升级服务端时所有客户端需要一起升级。
 - **面板开启后必须配置认证**：`dashboard.port > 0` 时 `user`/`password` 必填，且默认只绑 `127.0.0.1`。
@@ -477,7 +476,7 @@ ping 10.144.144.3        # 直接 ping 对方虚拟 IP
 | 端点学习（服务端观测客户端公网地址并分发） | ✅ |
 | 本机路由自动配置与退出清理 | ✅ |
 | 全 mesh 直连（至少一方可达时） | ✅ |
-| **TCP 中继兜底**（直连打不通时自动切换） | ✅ |
+| **TCP 中继兜底**（直连打不通时自动切换，断线退避重连） | ✅ |
 | CLI：`trairi overlay status` / `trairi overlay cleanup` | ✅ |
 | **服务端自身作为组网节点**（`overlay.node_ipv4`） | ✅ |
 | **STUN（NAT 映射探测）** | ✅ |

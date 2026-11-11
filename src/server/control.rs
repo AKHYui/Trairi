@@ -152,6 +152,7 @@ pub async fn handle_connection(state: Arc<ServerState>, accepted: Accepted) -> R
         run_id: run_id.clone(),
         remote_addr: peer.to_string(),
         hostname: login.hostname.clone(),
+        user: login.user.clone(),
         os: login.os.clone(),
         arch: login.arch.clone(),
         version: login.client_version.clone(),

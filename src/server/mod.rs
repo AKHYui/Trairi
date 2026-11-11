@@ -117,7 +117,7 @@ impl GroupMembers {
         self.members.lock().unwrap().push(proxy);
     }
 
-    /// 轮询挑一个健康的成员。
+    /// 按健康状态和权重轮流挑一个成员。
     pub fn pick(&self) -> Option<Arc<ProxyRuntime>> {
         let members = self.members.lock().unwrap().clone();
         if members.is_empty() {
@@ -129,8 +129,19 @@ impl GroupMembers {
             .cloned()
             .collect();
         let pool = if healthy.is_empty() { members } else { healthy };
-        let idx = (self.rr.fetch_add(1, Ordering::Relaxed) as usize) % pool.len();
-        Some(pool[idx].clone())
+        let total: u64 = pool.iter().map(|m| m.weight.max(1) as u64).sum();
+        if total == 0 {
+            return None;
+        }
+        let slot = self.rr.fetch_add(1, Ordering::Relaxed) % total;
+        let mut acc = 0u64;
+        for member in pool {
+            acc += member.weight.max(1) as u64;
+            if slot < acc {
+                return Some(member);
+            }
+        }
+        None
     }
 }
 
@@ -139,6 +150,7 @@ pub struct ClientHandle {
     pub run_id: String,
     pub remote_addr: String,
     pub hostname: String,
+    pub user: String,
     pub os: String,
     pub arch: String,
     pub version: String,
@@ -165,6 +177,7 @@ pub struct ProxyRuntime {
     pub subdomain: String,
     pub sk: String,
     pub group: String,
+    pub weight: u32,
     pub bandwidth_limit: u64,
     pub proxy_protocol: String,
     pub healthy: AtomicBool,
@@ -177,7 +190,12 @@ pub struct ProxyRuntime {
 }
 
 impl ProxyRuntime {
-    pub fn new(req: &NewProxyRequest, client: Arc<ClientHandle>, remote_port: u16) -> Self {
+    pub fn new(
+        req: &NewProxyRequest,
+        client: Arc<ClientHandle>,
+        remote_port: u16,
+        default_proxy_protocol: &str,
+    ) -> Self {
         Self {
             name: req.name.clone(),
             kind: req.kind.wire(),
@@ -187,8 +205,13 @@ impl ProxyRuntime {
             subdomain: req.subdomain.clone(),
             sk: req.sk.clone(),
             group: req.group.clone(),
+            weight: req.weight.clamp(1, 1000),
             bandwidth_limit: req.bandwidth_limit,
-            proxy_protocol: req.proxy_protocol.clone(),
+            proxy_protocol: if req.proxy_protocol.is_empty() {
+                default_proxy_protocol.to_string()
+            } else {
+                req.proxy_protocol.clone()
+            },
             healthy: AtomicBool::new(true),
             work: WorkQueue::default(),
             stats: Stats::default(),
@@ -394,7 +417,12 @@ impl ServerState {
             }
         }
 
-        let proxy = Arc::new(ProxyRuntime::new(req, client.clone(), remote_port));
+        let proxy = Arc::new(ProxyRuntime::new(
+            req,
+            client.clone(),
+            remote_port,
+            &self.cfg.proxy_protocol_version,
+        ));
 
         {
             let mut proxies = self.proxies.write().await;
@@ -668,5 +696,52 @@ mod tests {
             st.allocate_port(12345, false).is_err(),
             "allow_ports 为空时不得分配固定端口"
         );
+    }
+
+    #[test]
+    fn group_weighted_round_robin() {
+        let (tx, _rx) = mpsc::channel(4);
+        let client = Arc::new(ClientHandle {
+            run_id: "test".into(),
+            remote_addr: "127.0.0.1:1".into(),
+            hostname: "test".into(),
+            user: String::new(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            version: "0.0.0".into(),
+            connected_at: Instant::now(),
+            connected_at_wall: SystemTime::now(),
+            tx,
+            proxies: StdMutex::new(Vec::new()),
+            transport: "tcp".into(),
+        });
+        let group = GroupMembers::new("g", "k", 1234);
+        for (name, weight) in [("a", 1), ("b", 3)] {
+            let req = NewProxyRequest {
+                name: name.into(),
+                kind: crate::config::ProxyKind::Tcp,
+                remote_port: 1234,
+                custom_domains: Vec::new(),
+                subdomain: String::new(),
+                sk: String::new(),
+                group: "g".into(),
+                group_key: "k".into(),
+                weight,
+                bandwidth_limit: 0,
+                proxy_protocol: String::new(),
+            };
+            group.add(Arc::new(ProxyRuntime::new(&req, client.clone(), 1234, "")));
+        }
+
+        let mut a = 0;
+        let mut b = 0;
+        for _ in 0..8 {
+            match group.pick().unwrap().name.as_str() {
+                "a" => a += 1,
+                "b" => b += 1,
+                other => panic!("unexpected member {other}"),
+            }
+        }
+        assert_eq!((a, b), (2, 6), "权重 1:3 应按 2:6 分配");
     }
 }

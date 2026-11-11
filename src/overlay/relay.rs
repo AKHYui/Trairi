@@ -11,7 +11,8 @@
 //! 中继只搬运密文，不持有任何密钥。
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -284,6 +285,31 @@ async fn serve_conn(
 pub struct RelayClient {
     tx: mpsc::Sender<Vec<u8>>,
     incoming: Arc<Mutex<Option<mpsc::Receiver<([u8; 32], Vec<u8>)>>>>,
+    _tasks: Arc<RelayTasks>,
+}
+
+/// 持有中继连接的后台任务；最后一个 RelayClient 被丢弃时中止它们，
+/// 这样 RelayLink 丢掉旧连接后可以立刻重新认证，而不是等心跳超时。
+struct RelayTasks {
+    handles: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl RelayTasks {
+    fn new(handles: Vec<tokio::task::JoinHandle<()>>) -> Self {
+        Self {
+            handles: std::sync::Mutex::new(handles),
+        }
+    }
+}
+
+impl Drop for RelayTasks {
+    fn drop(&mut self) {
+        if let Ok(mut handles) = self.handles.lock() {
+            for handle in handles.drain(..) {
+                handle.abort();
+            }
+        }
+    }
 }
 
 impl RelayClient {
@@ -325,7 +351,7 @@ impl RelayClient {
         let (in_tx, in_rx) = mpsc::channel::<([u8; 32], Vec<u8>)>(1024);
 
         // 写任务
-        tokio::spawn(async move {
+        let writer = tokio::spawn(async move {
             while let Some(buf) = rx.recv().await {
                 if wr.write_all(&buf).await.is_err() {
                     break;
@@ -335,7 +361,7 @@ impl RelayClient {
         });
 
         // 读任务
-        tokio::spawn(async move {
+        let reader = tokio::spawn(async move {
             let mut rd = rd;
             loop {
                 match read_frame(&mut rd).await {
@@ -355,7 +381,7 @@ impl RelayClient {
         });
 
         // 心跳
-        {
+        let heartbeat = {
             let tx = tx.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_secs(20));
@@ -365,12 +391,13 @@ impl RelayClient {
                         break;
                     }
                 }
-            });
-        }
+            })
+        };
 
         Ok(Self {
             tx,
             incoming: Arc::new(Mutex::new(Some(in_rx))),
+            _tasks: Arc::new(RelayTasks::new(vec![writer, reader, heartbeat])),
         })
     }
 
@@ -380,11 +407,160 @@ impl RelayClient {
     }
 
     /// 通过中继发给某个公钥对应的节点。
-    pub async fn send_to(&self, dst: [u8; 32], payload: &[u8]) {
+    ///
+    /// 返回 false 表示写通道已经关闭（连接已断）。
+    pub async fn send_to(&self, dst: [u8; 32], payload: &[u8]) -> bool {
         let mut body = Vec::with_capacity(32 + payload.len());
         body.extend_from_slice(&dst);
         body.extend_from_slice(payload);
-        let _ = self.tx.send(encode_frame(FRAME_SEND, &body)).await;
+        self.tx.send(encode_frame(FRAME_SEND, &body)).await.is_ok()
+    }
+
+    /// 写通道是否已经关闭。
+    pub fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
+}
+
+struct RelayLinkInner {
+    addr: String,
+    network: String,
+    secret_hash: String,
+    pubkey: [u8; 32],
+    current: RwLock<Option<RelayClient>>,
+    incoming_tx: mpsc::Sender<([u8; 32], Vec<u8>)>,
+    incoming: Mutex<Option<mpsc::Receiver<([u8; 32], Vec<u8>)>>>,
+    connected: AtomicBool,
+    generation: AtomicU64,
+}
+
+/// 带自动重连的中继链路。
+///
+/// 对上层暴露稳定的收包通道；底层 `RelayClient` 断开后由后台任务按
+/// 1s/2s/5s/10s/30s 退避重连，旧连接退出不会误删新连接。
+#[derive(Clone)]
+pub struct RelayLink {
+    inner: Arc<RelayLinkInner>,
+}
+
+impl RelayLink {
+    pub fn new(addr: String, network: String, secret_hash: String, pubkey: [u8; 32]) -> Self {
+        let (in_tx, in_rx) = mpsc::channel::<([u8; 32], Vec<u8>)>(1024);
+        let inner = Arc::new(RelayLinkInner {
+            addr,
+            network,
+            secret_hash,
+            pubkey,
+            current: RwLock::new(None),
+            incoming_tx: in_tx,
+            incoming: Mutex::new(Some(in_rx)),
+            connected: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
+        });
+        let weak = Arc::downgrade(&inner);
+        tokio::spawn(async move { relay_reconnect_loop(weak).await });
+        Self { inner }
+    }
+
+    /// 取出稳定的「收到对端报文」接收端（只能取一次）。
+    pub async fn take_incoming(&self) -> Option<mpsc::Receiver<([u8; 32], Vec<u8>)>> {
+        self.inner.incoming.lock().await.take()
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.inner.connected.load(Ordering::Relaxed)
+    }
+
+    pub async fn send_to(&self, dst: [u8; 32], payload: &[u8]) {
+        let client = self.inner.current.read().await.clone();
+        if let Some(client) = client
+            && !client.send_to(dst, payload).await
+        {
+            // 写通道关闭时尽早让路径选择回退，后台任务会负责重连。
+            self.inner.connected.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
+async fn relay_reconnect_loop(weak: Weak<RelayLinkInner>) {
+    let mut backoff = 1u64;
+    loop {
+        let Some(inner) = weak.upgrade() else {
+            return;
+        };
+
+        if inner.connected.load(Ordering::Relaxed) {
+            let closed = inner
+                .current
+                .read()
+                .await
+                .as_ref()
+                .map(|c| c.is_closed())
+                .unwrap_or(true);
+            if closed {
+                inner.connected.store(false, Ordering::Relaxed);
+            }
+        }
+
+        if !inner.connected.load(Ordering::Relaxed) {
+            match RelayClient::connect(
+                &inner.addr,
+                &inner.network,
+                &inner.secret_hash,
+                inner.pubkey,
+            )
+            .await
+            {
+                Ok(client) => {
+                    let Some(mut rx) = client.take_incoming().await else {
+                        drop(inner);
+                        tokio::time::sleep(Duration::from_secs(backoff)).await;
+                        backoff = (backoff * 2).min(30);
+                        continue;
+                    };
+                    let generation = inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
+                    *inner.current.write().await = Some(client);
+                    inner.connected.store(true, Ordering::Relaxed);
+                    tracing::info!("overlay 中继已连接 {}", inner.addr);
+                    backoff = 1;
+
+                    let weak_reader = weak.clone();
+                    tokio::spawn(async move {
+                        while let Some(item) = rx.recv().await {
+                            let Some(inner) = weak_reader.upgrade() else {
+                                break;
+                            };
+                            if inner.generation.load(Ordering::Relaxed) != generation {
+                                break;
+                            }
+                            if inner.incoming_tx.send(item).await.is_err() {
+                                break;
+                            }
+                        }
+                        if let Some(inner) = weak_reader.upgrade()
+                            && inner.generation.load(Ordering::Relaxed) == generation
+                        {
+                            inner.connected.store(false, Ordering::Relaxed);
+                            *inner.current.write().await = None;
+                            tracing::warn!("overlay 中继连接断开，准备重连");
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("overlay 中继连接失败: {e:#}，{} 秒后重试", backoff);
+                }
+            }
+        }
+
+        let connected = inner.connected.load(Ordering::Relaxed);
+        drop(inner);
+        if connected {
+            // 连接正常时只做轻量存活检查，不累积退避时间。
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        } else {
+            tokio::time::sleep(Duration::from_secs(backoff)).await;
+            backoff = (backoff * 2).min(30);
+        }
     }
 }
 
@@ -481,5 +657,40 @@ mod tests {
         let addr = format!("127.0.0.1:{port}");
         let r = RelayClient::connect(&addr, "net", &hash, [4u8; 32]).await;
         assert!(r.is_err(), "未登记的 pubkey 不应接入中继");
+    }
+
+    #[tokio::test]
+    async fn relay_link_reconnects_after_drop() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hash = crate::overlay::secret_hash("secret");
+        spawn_relay_server(listener, "net".into(), hash.clone(), None)
+            .await
+            .unwrap();
+
+        let link = RelayLink::new(format!("127.0.0.1:{port}"), "net".into(), hash, [7u8; 32]);
+        let mut connected = false;
+        for _ in 0..50 {
+            if link.is_connected() {
+                connected = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(connected, "RelayLink 首次连接失败");
+
+        // 模拟底层连接断开：丢掉当前 client，后台应重新建立连接。
+        link.inner.connected.store(false, Ordering::Relaxed);
+        *link.inner.current.write().await = None;
+
+        let mut reconnected = false;
+        for _ in 0..100 {
+            if link.is_connected() {
+                reconnected = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(reconnected, "RelayLink 断开后没有自动重连");
     }
 }

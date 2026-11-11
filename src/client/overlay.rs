@@ -194,23 +194,18 @@ pub async fn setup(
         }
     }
 
-    // 连上服务端中继（直连不通时兜底）
+    // 配置服务端中继（直连不通时兜底）；连接与断线重连由 RelayLink 后台维护。
     let relay = if cfg.relay && assign.server_relay_port > 0 {
         let addr = format!("{server_addr}:{}", assign.server_relay_port);
         let hash = secret_hash(&cfg.network_secret);
         let public = boringtun::x25519::PublicKey::from(&private).to_bytes();
-        match crate::overlay::relay::RelayClient::connect(&addr, &cfg.network_name, &hash, public)
-            .await
-        {
-            Ok(r) => {
-                tracing::info!("overlay 中继已连接 {addr}");
-                Some(r)
-            }
-            Err(e) => {
-                tracing::warn!("连接 overlay 中继 {addr} 失败: {e:#}");
-                None
-            }
-        }
+        tracing::info!("overlay 中继已配置 {addr}（断线自动重连）");
+        Some(crate::overlay::relay::RelayLink::new(
+            addr,
+            cfg.network_name.clone(),
+            hash,
+            public,
+        ))
     } else {
         None
     };

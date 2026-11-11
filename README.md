@@ -186,7 +186,7 @@ visitors:           # visitor definitions
 | Key | Description |
 |---|---|
 | `mode` | `"server"` or `"client"`; can be overridden on the CLI |
-| `log` | `level` (trace/debug/info/warn/error), `file` (empty = console only; a path enables daily rotation) |
+| `log` | `level` (trace/debug/info/warn/error), `file` (empty = console only; a path enables daily rotation), `max_days` (retention in days) |
 | `server` | Server parameters |
 | `client` | Client parameters |
 | `dashboard` | Server dashboard |
@@ -211,7 +211,7 @@ visitors:           # visitor definitions
 | `token` | `""` | Authentication secret; **required in server mode** |
 | `force_encryption` | `true` | Require encryption |
 | `tls_cert_file` / `tls_key_file` | `""` | Server TLS certificate/key (PEM) |
-| `proxy_protocol_version` | `""` | Global PROXY protocol requirement (can be overridden per proxy) |
+| `proxy_protocol_version` | `""` | Default PROXY protocol version for proxies (per-proxy overrides) |
 
 ### `client`
 
@@ -229,11 +229,11 @@ visitors:           # visitor definitions
 | `ws_path` | `/~!trairi` | WebSocket path |
 | `use_encryption` | `true` | Encrypt the record layer (requires a token) |
 | `use_compression` | `false` | snappy compression |
-| `heartbeat_interval` | `30` | Heartbeat interval in seconds |
+| `heartbeat_interval` | `30` | Heartbeat interval in seconds (0 = use the server's suggestion) |
 | `heartbeat_timeout` | `90` | Heartbeat timeout in seconds |
 | `dial_timeout` | `10` | Connect timeout for the server/local service |
 | `proxy_protocol_version` | `""` | Default PROXY protocol version |
-| `bandwidth_limit` | `""` | Global bandwidth limit (currently applied per proxy) |
+| `bandwidth_limit` | `""` | Global bandwidth limit (default for proxies) |
 | `start` | `[]` | Start only the listed proxies |
 
 ### `proxies`
@@ -249,11 +249,10 @@ visitors:           # visitor definitions
 | `subdomain` | Used with the server's `subdomain_host` |
 | `sk` | Secret key for secret-key TCP (`stcp`) |
 | `group` / `group_key` | Load-balancing group (same group + port share a listener) |
-| `weight` | Reserved |
+| `weight` | Load-balancing weight for group members (1–1000, default 1) |
 | `bandwidth_limit` | e.g. `"5MB"`, `"512KB"`; empty = unlimited |
 | `bandwidth_limit_mode` | `server` (default) or `client` |
 | `proxy_protocol_version` | `""` / `v1` / `v2` |
-| `use_encryption` / `use_compression` | Currently connection-level switches |
 | `http_user` / `http_pwd` | Basic Auth for `static_file` |
 | `health_check_type` | `tcp` / `http`; empty = disabled |
 | `health_check_path` | HTTP health-check path (default `/`) |
@@ -317,7 +316,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-Current test suite: 70 unit tests, 14 port-forwarding end-to-end tests, and
+Current test suite: 74 unit tests, 14 port-forwarding end-to-end tests, and
 8 overlay integration tests.
 
 The integration tests start a real server + client in one process and cover:
@@ -403,8 +402,8 @@ See [SECURITY.md](SECURITY.md) for the vulnerability-reporting policy.
   not re-routed (this keeps WebSocket/keep-alive working).
 - **`http_proxy` only supports CONNECT** (HTTPS tunnels); plain
   `GET http://...` proxying is not implemented.
-- **Encryption/compression are connection-level switches**: per-proxy
-  `use_encryption` / `use_compression` do not currently take effect separately.
+- **Encryption/compression are connection-level**: set `client.use_encryption` /
+  `client.use_compression`; there are no per-proxy switches.
 - **No server hot reload**: restart the process after changing the server
   config; the client supports `/api/reload`.
 - **Protocol v2 is not backward compatible**: v1 clients must be upgraded.
@@ -521,7 +520,7 @@ ping 10.144.144.3        # ping the peer's virtual IP directly
 | Endpoint learning (server observes client public addresses) | ✅ |
 | Automatic host routes and cleanup | ✅ |
 | Full-mesh direct paths (when at least one side is reachable) | ✅ |
-| **TCP relay fallback** (automatic when direct fails) | ✅ |
+| **TCP relay fallback** (automatic when direct fails, reconnects with backoff) | ✅ |
 | CLI: `trairi overlay status` / `trairi overlay cleanup` | ✅ |
 | **Server itself as an overlay node** (`overlay.node_ipv4`) | ✅ |
 | **STUN (NAT mapping detection)** | ✅ |
