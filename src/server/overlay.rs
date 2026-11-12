@@ -49,7 +49,7 @@ impl ServerNode {
         let private = crate::overlay::node::generate_private();
         let pubkey = boringtun::x25519::PublicKey::from(&private).to_bytes();
         let handle = crate::overlay::node::start_node(
-            Box::new(device),
+            device,
             std::sync::Arc::new(sock),
             private.clone(),
             ip,

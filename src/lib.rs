@@ -14,6 +14,8 @@
 //! - [`dashboard`] 服务端面板与客户端管理 API
 
 pub mod cli;
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod client;
 pub mod config;
 pub mod crypto;

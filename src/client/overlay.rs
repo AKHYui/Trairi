@@ -260,7 +260,7 @@ pub async fn setup(
     }
 
     let node = node::start_node(
-        Box::new(device),
+        device,
         socket,
         private.clone(),
         ip,

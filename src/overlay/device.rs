@@ -15,17 +15,20 @@ pub trait IpDevice: Send {
     async fn write_packet(&mut self, pkt: &[u8]) -> io::Result<()>;
 }
 
-/// 真实的 TUN 虚拟网卡。
+/// 真实的 TUN 虚拟网卡（桌面平台）。
+#[cfg(not(target_os = "android"))]
 pub struct TunDevice {
     dev: tun::AsyncDevice,
 }
 
+#[cfg(not(target_os = "android"))]
 impl TunDevice {
     pub fn new(dev: tun::AsyncDevice) -> Self {
         Self { dev }
     }
 }
 
+#[cfg(not(target_os = "android"))]
 #[async_trait]
 impl IpDevice for TunDevice {
     async fn read_packet(&mut self, buf: &mut [u8]) -> io::Result<usize> {
