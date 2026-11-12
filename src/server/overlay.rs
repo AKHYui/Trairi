@@ -32,7 +32,9 @@ impl ServerNode {
             .node_ipv4
             .parse()
             .with_context(|| format!("overlay.node_ipv4 非法: {}", cfg.node_ipv4))?;
-        let node_port = cfg.udp_port + 3;
+        let node_port = cfg
+            .effective_node_port()
+            .context("overlay.node_port 未配置且无法从 udp_port 推导")?;
 
         let pool: ipnet::Ipv4Net = cfg.ipv4_pool.parse()?;
         let mut tun_cfg = cfg.clone();
@@ -161,20 +163,23 @@ impl OverlayCoordinator {
         let udp_port = udp.local_addr()?.port();
         let socket = Arc::new(udp);
 
-        // 中继端口：relay_listen 形如 "0.0.0.0:11012"；留空或端口 0 表示关闭
-        let relay_port = cfg
-            .relay_listen
+        // 中继端口：显式 relay_listen 优先；留空时从 udp_port + 2 推导。
+        let relay_listen = cfg.effective_relay_listen();
+        let relay_port = relay_listen
             .rsplit(':')
             .next()
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(0);
 
-        // 第二个 STUN 端口（udp_port + 1），用于探测客户端 NAT 映射行为
-        let stun_sock = if cfg.udp_port > 0 {
-            tokio::net::UdpSocket::bind(("0.0.0.0", cfg.udp_port + 1))
-                .await
-                .ok()
-                .map(Arc::new)
+        // 第二个 STUN 端口（默认 udp_port + 1），用于探测客户端 NAT 映射行为
+        let stun_sock = if let Some(stun_listen_port) = cfg.effective_stun_port() {
+            match tokio::net::UdpSocket::bind(("0.0.0.0", stun_listen_port)).await {
+                Ok(sock) => Some(Arc::new(sock)),
+                Err(e) => {
+                    tracing::warn!("overlay STUN 端口 {stun_listen_port} 绑定失败，已跳过: {e}");
+                    None
+                }
+            }
         } else {
             None
         };
@@ -296,9 +301,9 @@ impl OverlayCoordinator {
 
         // TCP 中继（直连不通时兜底）
         if relay_port > 0 {
-            let listener = tokio::net::TcpListener::bind(&cfg.relay_listen)
+            let listener = tokio::net::TcpListener::bind(&relay_listen)
                 .await
-                .with_context(|| format!("overlay.relay_listen 绑定失败: {}", cfg.relay_listen))?;
+                .with_context(|| format!("overlay.relay_listen 绑定失败: {relay_listen}"))?;
             let real_port = crate::overlay::relay::spawn_relay_server(
                 listener,
                 cfg.network_name.clone(),

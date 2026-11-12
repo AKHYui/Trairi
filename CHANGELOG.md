@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 — 2026-11-12
+
+- `server.kcp` now defaults to **false**, so KCP does not silently occupy UDP
+  `bind_port` and collide with `overlay.udp_port`.
+- `overlay.relay_listen` now defaults to empty and is derived from
+  `overlay.udp_port + 2`; explicit values still win. This removes the hard-coded
+  `0.0.0.0:11012` default that failed on servers using a custom overlay port.
+- Added validation for the KCP/overlay UDP port collision.
+- Added `overlay.stun_port` and `overlay.node_port` (0 = auto), so the derived
+  `udp_port + 1/+3` ports can be overridden explicitly.
+- Overlay port layout is documented as `udp_port`, `+1` STUN, `+2` relay,
+  `+3` server node.
+
 ## 0.3.0 — 2026-11-12
 
 - Added P2P proxy (`type: p2p`): server rendezvous exchanges UDP endpoints,

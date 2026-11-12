@@ -120,7 +120,8 @@ metrics. The dashboard JSON API can be scraped if you need metrics.
 
 KCP is a reliable-UDP transport, not an encryption layer. Keep
 `force_encryption` / `use_encryption` enabled so the Trairi token and
-ChaCha20-Poly1305 record layer still protect the stream.
+ChaCha20-Poly1305 record layer still protect the stream. `server.kcp` is
+opt-in because it shares UDP `bind_port` with the overlay data plane.
 
 ---
 
@@ -203,7 +204,7 @@ visitors:           # visitor definitions
 |---|---|---|
 | `bind_addr` | `0.0.0.0` | Listen address |
 | `bind_port` | — | Client control port (required); KCP uses UDP on the same port |
-| `kcp` | `true` | Enable KCP (reliable UDP) on `bind_port`; disable if UDP is unavailable |
+| `kcp` | `false` | Enable KCP (reliable UDP) on `bind_port`; must not collide with `overlay.udp_port` |
 | `p2p_port` | `0` | UDP rendezvous port for P2P; 0 = P2P disabled |
 | `vhost_http_port` | `0` | HTTP virtual-host port; 0 disables |
 | `vhost_https_port` | `0` | HTTPS virtual-host port (SNI routing); 0 disables |
@@ -537,7 +538,15 @@ overlay:
   network_secret: a-long-random-string
   ipv4_pool: 10.144.144.0/24
   udp_port: 11013
+  stun_port: 0
+  node_port: 0
 ```
+
+Overlay port layout: `udp_port` is the main data plane; `stun_port` defaults to
+`udp_port + 1`; `relay_listen` defaults to TCP `udp_port + 2`; and `node_port`
+defaults to `udp_port + 3` when `node_ipv4` makes the server a node. All three
+can be set explicitly. Set `relay_listen` to `0.0.0.0:0` to disable the TCP
+relay.
 
 Client (**must run as root / Administrator** to create the TUN device):
 
@@ -673,6 +682,13 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
 
 ## 12. Changelog
 
+- **0.3.1** (2026-11-12): fix overlay port defaults.
+  - `server.kcp` is opt-in (`false` by default) so it cannot silently occupy
+    UDP `bind_port` when `overlay.udp_port` uses the same port.
+  - `overlay.relay_listen` is empty by default and derives from
+    `overlay.udp_port + 2`; explicit values still win.
+  - `overlay.stun_port` / `overlay.node_port` can override the derived
+    `+1` / `+3` ports.
 - **0.3.0** (2026-11-12): KCP + P2P + Android bridge.
   - KCP reliable-UDP transport (`protocol: kcp`).
   - P2P proxy with LAN endpoint preference, public UDP punch, KCP + smux, and

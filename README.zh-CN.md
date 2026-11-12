@@ -118,6 +118,7 @@ ssh -L 7500:127.0.0.1:7500 你的服务器
 
 KCP 是可靠 UDP 传输，不是加密层；请保持 `force_encryption` / `use_encryption`
 开启，让 Trairi 的 token 认证和 ChaCha20-Poly1305 记录层继续保护数据。
+`server.kcp` 默认关闭，因为它会和 overlay 数据面共用 UDP `bind_port`。
 
 ---
 
@@ -189,7 +190,7 @@ visitors:           # 访问者列表
 |---|---|---|
 | `bind_addr` | `0.0.0.0` | 监听地址 |
 | `bind_port` | — | 客户端接入端口（必填）；KCP 使用同一端口的 UDP |
-| `kcp` | `true` | 在 `bind_port` 上启用 KCP（可靠 UDP）；UDP 不可用时设 false |
+| `kcp` | `false` | 在 `bind_port` 上启用 KCP（可靠 UDP）；不能与 `overlay.udp_port` 冲突 |
 | `p2p_port` | `0` | P2P UDP 会合端口；0 = 关闭 P2P |
 | `vhost_http_port` | `0` | HTTP 虚拟主机端口，0 关闭 |
 | `vhost_https_port` | `0` | HTTPS 虚拟主机端口（SNI 路由），0 关闭 |
@@ -488,7 +489,14 @@ overlay:
   network_secret: 很长的随机串
   ipv4_pool: 10.144.144.0/24
   udp_port: 11013
+  stun_port: 0
+  node_port: 0
 ```
+
+Overlay 端口布局：`udp_port` 是数据面；`stun_port` 默认 `udp_port + 1`；
+`relay_listen` 默认 TCP `udp_port + 2`；`node_port` 在服务端自己也成为节点时
+默认 `udp_port + 3`。三个都可以显式配置。`relay_listen` 填 `0.0.0.0:0` 可关闭
+TCP 中继。
 
 客户端（**必须以 root / 管理员运行**，因为要建虚拟网卡）：
 
@@ -621,6 +629,12 @@ trairi overlay cleanup --interface trairi0   # 进程被强杀后清理残留网
 
 ## 12. 版本记录
 
+- **0.3.1**（2026-11-12）：修复 overlay 端口默认值。
+  - `server.kcp` 改为默认 `false`，避免它悄悄占用 UDP `bind_port` 与
+    `overlay.udp_port` 冲突；
+  - `overlay.relay_listen` 默认留空，自动使用 `overlay.udp_port + 2`；
+  - `overlay.stun_port` / `overlay.node_port` 可显式覆盖默认的 `+1` / `+3` 端口；
+  - 显式配置仍然优先，避免再出现写死的 `11012`。
 - **0.3.0**（2026-11-12）：KCP + P2P + Android 桥接。
   - KCP 可靠 UDP 传输（`protocol: kcp`）；
   - P2P 代理：私网 endpoint 优先、公网打洞、KCP + smux，失败回退中继；

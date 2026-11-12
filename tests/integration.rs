@@ -155,6 +155,7 @@ async fn start(
         server: ServerConfig {
             bind_addr: "127.0.0.1".into(),
             bind_port: server_port,
+            kcp: true,
             vhost_http_port,
             allow_ports: "1-65535".into(),
             token: token.to_string(),

@@ -206,6 +206,15 @@ impl Config {
                     {
                         errors.push("server.p2p_port 不能与 kcp 使用的 bind_port 相同".to_string());
                     }
+                    if self.server.kcp
+                        && self.overlay.enable
+                        && self.overlay.udp_port == self.server.bind_port
+                    {
+                        errors.push(
+                            "overlay.udp_port 不能与 kcp 使用的 bind_port 相同；请关掉 server.kcp 或改 overlay.udp_port"
+                                .to_string(),
+                        );
+                    }
                     if self.server.token.is_empty() {
                         errors.push(
                             "[server].token 不能为空（公网服务端必须配置认证 token）".to_string(),
@@ -437,7 +446,7 @@ impl Default for ServerConfig {
         Self {
             bind_addr: "0.0.0.0".into(),
             bind_port: 0,
-            kcp: true,
+            kcp: false,
             p2p_port: 0,
             vhost_http_port: 0,
             vhost_https_port: 0,
@@ -514,13 +523,18 @@ pub struct OverlayConfig {
     pub ipv4_pool: String,
     /// 数据面 UDP 监听端口（0 表示随机）
     pub udp_port: u16,
+    /// STUN UDP 端口；0 = 自动使用 udp_port + 1
+    pub stun_port: u16,
+    /// 服务端自身节点的 UDP 端口；0 = 自动使用 udp_port + 3
+    pub node_port: u16,
     /// 虚拟网卡名
     pub interface: String,
     /// 虚拟网卡 MTU
     pub mtu: u16,
     /// 服务端是否自己也作为组网节点（填它的虚拟 IP，留空表示只做协调）
     pub node_ipv4: String,
-    /// 服务端 TCP 中继监听地址；留空或端口 0 表示关闭中继
+    /// 服务端 TCP 中继监听地址；留空表示从 `udp_port + 2` 自动推导，
+    /// 端口 0 表示关闭中继。
     pub relay_listen: String,
     /// 客户端是否允许经由服务端中继（直连不通时兜底）
     pub relay: bool,
@@ -546,6 +560,8 @@ impl Default for OverlayConfig {
             ipv4: String::new(),
             ipv4_pool: String::new(),
             udp_port: 11013,
+            stun_port: 0,
+            node_port: 0,
             interface: if cfg!(windows) {
                 "Trairi".into()
             } else {
@@ -553,7 +569,7 @@ impl Default for OverlayConfig {
             },
             mtu: 1280,
             node_ipv4: String::new(),
-            relay_listen: "0.0.0.0:11012".into(),
+            relay_listen: String::new(),
             relay: true,
             direct: true,
             stun_servers: Vec::new(),
@@ -561,6 +577,49 @@ impl Default for OverlayConfig {
             proxy_networks: Vec::new(),
             acl: Vec::new(),
         }
+    }
+}
+
+impl OverlayConfig {
+    /// 实际使用的中继监听地址。
+    ///
+    /// 显式配置优先；留空时从数据面 `udp_port + 2` 推导，避免默认端口和
+    /// 用户配置的 overlay 端口完全无关。端口 0 表示关闭中继。
+    pub fn effective_relay_listen(&self) -> String {
+        let configured = self.relay_listen.trim();
+        if !configured.is_empty() {
+            return configured.to_string();
+        }
+        if self.udp_port == 0 {
+            return String::new();
+        }
+        self.udp_port
+            .checked_add(2)
+            .filter(|p| *p > 0)
+            .map(|p| format!("0.0.0.0:{p}"))
+            .unwrap_or_default()
+    }
+
+    /// STUN 端口；0 表示自动从 `udp_port + 1` 推导，`udp_port == 0` 时关闭。
+    pub fn effective_stun_port(&self) -> Option<u16> {
+        if self.stun_port > 0 {
+            return Some(self.stun_port);
+        }
+        if self.udp_port == 0 {
+            return None;
+        }
+        self.udp_port.checked_add(1).filter(|p| *p > 0)
+    }
+
+    /// 服务端自身节点的 UDP 端口；0 表示自动从 `udp_port + 3` 推导。
+    pub fn effective_node_port(&self) -> Option<u16> {
+        if self.node_port > 0 {
+            return Some(self.node_port);
+        }
+        if self.udp_port == 0 {
+            return None;
+        }
+        self.udp_port.checked_add(3).filter(|p| *p > 0)
     }
 }
 
@@ -888,5 +947,31 @@ proxies:
         assert_eq!(ProxyKind::HttpProxy.wire(), WireKind::Tcp);
         assert!(ProxyKind::Socks5.is_plugin());
         assert!(!ProxyKind::Tcp.is_plugin());
+    }
+
+    #[test]
+    fn relay_listen_defaults_to_udp_port_plus_two() {
+        let mut c = OverlayConfig::default();
+        c.udp_port = 56000;
+        c.relay_listen.clear();
+        assert_eq!(c.effective_relay_listen(), "0.0.0.0:56002");
+        assert_eq!(c.effective_stun_port(), Some(56001));
+        assert_eq!(c.effective_node_port(), Some(56003));
+
+        c.stun_port = 16001;
+        c.node_port = 16003;
+        assert_eq!(c.effective_stun_port(), Some(16001));
+        assert_eq!(c.effective_node_port(), Some(16003));
+
+        c.stun_port = 0;
+        c.node_port = 0;
+        c.relay_listen = "127.0.0.1:16000".into();
+        assert_eq!(c.effective_relay_listen(), "127.0.0.1:16000");
+
+        c.relay_listen.clear();
+        c.udp_port = 0;
+        assert!(c.effective_relay_listen().is_empty());
+        assert_eq!(c.effective_stun_port(), None);
+        assert_eq!(c.effective_node_port(), None);
     }
 }
