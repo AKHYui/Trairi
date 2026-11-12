@@ -215,6 +215,49 @@ impl Config {
                                 .to_string(),
                         );
                     }
+                    if self.overlay.enable {
+                        let udp = self.overlay.udp_port;
+                        let stun = self.overlay.effective_stun_port();
+                        let node = self.overlay.effective_node_port();
+                        let relay_port = self
+                            .overlay
+                            .effective_relay_listen()
+                            .rsplit(':')
+                            .next()
+                            .and_then(|p| p.parse::<u16>().ok())
+                            .unwrap_or(0);
+                        let mut ports = Vec::new();
+                        if udp > 0 {
+                            ports.push((udp, "overlay.udp_port"));
+                        }
+                        if let Some(p) = stun {
+                            ports.push((p, "overlay.stun_port"));
+                        }
+                        if let Some(p) = node
+                            && !self.overlay.node_ipv4.trim().is_empty()
+                        {
+                            ports.push((p, "overlay.node_port"));
+                        }
+                        if relay_port > 0 {
+                            ports.push((relay_port, "overlay.relay_listen"));
+                        }
+                        for i in 0..ports.len() {
+                            for j in (i + 1)..ports.len() {
+                                if ports[i].0 == ports[j].0 {
+                                    errors.push(format!(
+                                        "overlay 端口冲突: {} 和 {} 都是 {}",
+                                        ports[i].1, ports[j].1, ports[i].0
+                                    ));
+                                }
+                            }
+                        }
+                        if relay_port > 0 && relay_port == self.server.bind_port {
+                            errors.push(format!(
+                                "overlay.relay_listen 端口 {} 不能与 server.bind_port 相同",
+                                relay_port
+                            ));
+                        }
+                    }
                     if self.server.token.is_empty() {
                         errors.push(
                             "[server].token 不能为空（公网服务端必须配置认证 token）".to_string(),

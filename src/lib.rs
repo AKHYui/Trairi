@@ -192,8 +192,31 @@ fn run_overlay_tool(cli: &Cli, action: &cli::OverlayAction) -> Result<()> {
                     }
                 );
                 println!("  地址池      : {}", o.ipv4_pool);
-                println!("  UDP 端口    : {}", o.udp_port);
-                println!("  中继监听    : {}", o.relay_listen);
+                println!("  UDP 数据面  : {}", o.udp_port);
+                println!(
+                    "  STUN        : {}",
+                    o.effective_stun_port()
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "关闭".into())
+                );
+                println!(
+                    "  中继监听    : {}",
+                    if o.effective_relay_listen().is_empty() {
+                        "关闭".to_string()
+                    } else {
+                        o.effective_relay_listen()
+                    }
+                );
+                println!(
+                    "  节点端口    : {}",
+                    if o.node_ipv4.is_empty() {
+                        "（未启用服务端节点）".to_string()
+                    } else {
+                        o.effective_node_port()
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "无法推导".into())
+                    }
+                );
                 println!("  允许中继    : {}", o.relay);
                 println!("  允许直连    : {}", o.direct);
                 println!("  网卡名      : {}", o.interface);
