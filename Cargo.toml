@@ -1,6 +1,6 @@
 [package]
 name = "trairi"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A single-binary reverse proxy and WireGuard overlay networking tool written in Rust"
 license = "MIT"

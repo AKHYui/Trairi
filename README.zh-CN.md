@@ -621,6 +621,11 @@ trairi overlay cleanup --interface trairi0   # 进程被强杀后清理残留网
 
 ## 12. 版本记录
 
+- **0.3.0**（2026-11-12）：KCP + P2P + Android 桥接。
+  - KCP 可靠 UDP 传输（`protocol: kcp`）；
+  - P2P 代理：私网 endpoint 优先、公网打洞、KCP + smux，失败回退中继；
+  - 中继自动重连、分组加权、全局默认值、日志保留、面板用户字段；
+  - Rust Android VpnService TUN 桥接，供 Flutter 客户端使用。
 - **0.2.0**（2026-11-10）：安全加固版。
   - 协议 v2：Hello HMAC 覆盖完整字段 + 服务端重放缓存；记录层按方向分离 AEAD nonce；
   - 接入循环改为每连接 task，TLS/WS/首字节均有 5 秒超时；

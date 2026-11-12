@@ -673,6 +673,13 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
 
 ## 12. Changelog
 
+- **0.3.0** (2026-11-12): KCP + P2P + Android bridge.
+  - KCP reliable-UDP transport (`protocol: kcp`).
+  - P2P proxy with LAN endpoint preference, public UDP punch, KCP + smux, and
+    automatic relay fallback.
+  - Relay auto-reconnect, weighted group balancing, global defaults, log
+    retention, and dashboard user display.
+  - Rust Android VpnService TUN bridge for the Flutter client.
 - **0.2.0** (2026-11-10): security hardening.
   - Protocol v2: full-field Hello HMAC + server replay cache; per-direction AEAD
     nonce prefixes.
