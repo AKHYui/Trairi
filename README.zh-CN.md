@@ -347,7 +347,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-当前测试规模：76 个单元测试、17 个端口转发端到端测试、8 个 overlay 集成测试。
+当前测试规模：77 个单元测试、17 个端口转发端到端测试、8 个 overlay 集成测试。
 
 集成测试会在同一进程里起真实的 server + client，覆盖：
 

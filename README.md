@@ -366,7 +366,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-Current test suite: 76 unit tests, 17 port-forwarding end-to-end tests, and
+Current test suite: 77 unit tests, 17 port-forwarding end-to-end tests, and
 8 overlay integration tests.
 
 The integration tests start a real server + client in one process and cover:
