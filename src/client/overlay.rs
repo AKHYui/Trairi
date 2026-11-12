@@ -137,6 +137,15 @@ pub async fn setup(
         bail!("服务端拒绝了 overlay 登记: {}", assign.error);
     }
 
+    // 域名必须走 A 记录。否则 DNS 的 IPv6 结果会让控制面连上，
+    // 但 overlay UDP/relay/server-node 全部不可达。
+    let server_ip = crate::transport::resolve_server_addr(
+        server_addr,
+        assign.server_udp_port.max(1),
+    )
+    .await?;
+    let server_host = server_ip.ip().to_string();
+
     let ip: Ipv4Addr = assign
         .ip
         .parse()
@@ -152,7 +161,7 @@ pub async fn setup(
 
     // 探测自己的公网地址
     if assign.server_udp_port > 0 {
-        let target = format!("{server_addr}:{}", assign.server_udp_port);
+        let target = format!("{server_host}:{}", assign.server_udp_port);
         match tokio::net::lookup_host(&target).await {
             Ok(mut addrs) => {
                 if let Some(addr) = addrs.next() {
@@ -176,7 +185,7 @@ pub async fn setup(
                 None
             } else if p.is_server {
                 if assign.server_node_port > 0 {
-                    format!("{server_addr}:{}", assign.server_node_port)
+                    format!("{server_host}:{}", assign.server_node_port)
                         .parse()
                         .ok()
                 } else {
@@ -196,7 +205,7 @@ pub async fn setup(
 
     // 配置服务端中继（直连不通时兜底）；连接与断线重连由 RelayLink 后台维护。
     let relay = if cfg.relay && assign.server_relay_port > 0 {
-        let addr = format!("{server_addr}:{}", assign.server_relay_port);
+        let addr = format!("{server_host}:{}", assign.server_relay_port);
         let hash = secret_hash(&cfg.network_secret);
         let public = boringtun::x25519::PublicKey::from(&private).to_bytes();
         tracing::info!("overlay 中继已配置 {addr}（断线自动重连）");
@@ -212,7 +221,7 @@ pub async fn setup(
 
     // NAT 探测：必须用同一个 UDP socket（保证 NAT 映射一致），且在启动数据面之前
     if assign.server_udp_port > 0 {
-        let a = format!("{server_addr}:{}", assign.server_udp_port);
+        let a = format!("{server_host}:{}", assign.server_udp_port);
         let addr_a = tokio::net::lookup_host(&a)
             .await
             .ok()
@@ -228,7 +237,7 @@ pub async fn setup(
             }
             strong = true;
         } else if assign.server_stun_port > 0 {
-            let b = format!("{server_addr}:{}", assign.server_stun_port);
+            let b = format!("{server_host}:{}", assign.server_stun_port);
             addr_b = tokio::net::lookup_host(&b)
                 .await
                 .ok()
@@ -323,7 +332,7 @@ pub async fn setup(
         private,
         peers: tokio::sync::RwLock::new(ips),
         direct: cfg.direct,
-        server_addr: server_addr.to_string(),
+        server_addr: server_host,
         server_node_port: assign.server_node_port,
         magic_dns: cfg.magic_dns,
     })

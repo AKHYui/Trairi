@@ -273,18 +273,33 @@ pub fn kcp_config() -> KcpConfig {
     }
 }
 
+/// Resolve a client-facing server host to an IPv4 socket address.
+///
+/// A domain name must use its A record here. This prevents a dual-stack host
+/// or resolver from silently choosing IPv6, which is not supported by the
+/// overlay/TUN code and can leave the control connection working while all
+/// overlay traffic fails. An explicit IPv6 literal is still allowed for users
+/// who intentionally selected it.
+pub async fn resolve_server_addr(host: &str, port: u16) -> Result<std::net::SocketAddr> {
+    if let Ok(ip) = host.trim().parse::<std::net::IpAddr>() {
+        return Ok(std::net::SocketAddr::new(ip, port));
+    }
+    let mut addrs = tokio::net::lookup_host((host, port))
+        .await
+        .with_context(|| format!("解析服务器域名 {host}:{port} 失败"))?;
+    addrs
+        .find(|addr| addr.is_ipv4())
+        .ok_or_else(|| anyhow::anyhow!("服务器域名 {host} 没有可用的 IPv4 地址"))
+}
+
 /// 建立到服务端的原始连接（已完成 TLS / WS 握手，但还没有做 Trairi 握手）。
 pub async fn dial(cfg: &ClientConfig) -> Result<Stream> {
     let proto = cfg.effective_protocol();
     let addr = format!("{}:{}", cfg.server_addr, cfg.server_port);
+    let target = resolve_server_addr(&cfg.server_addr, cfg.server_port).await?;
     let timeout = Duration::from_secs(cfg.dial_timeout.max(1));
 
     if proto.is_kcp() {
-        let target = tokio::net::lookup_host(&addr)
-            .await
-            .with_context(|| format!("解析 KCP 服务端地址 {addr} 失败"))?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("KCP 服务端地址 {addr} 没有可用结果"))?;
         let kcp = tokio::time::timeout(timeout, KcpStream::connect(&kcp_config(), target))
             .await
             .map_err(|_| anyhow::anyhow!("连接 KCP 服务端 {addr} 超时"))?
@@ -292,7 +307,7 @@ pub async fn dial(cfg: &ClientConfig) -> Result<Stream> {
         return Ok(Box::new(kcp));
     }
 
-    let tcp = tokio::time::timeout(timeout, TcpStream::connect(&addr))
+    let tcp = tokio::time::timeout(timeout, TcpStream::connect(target))
         .await
         .map_err(|_| anyhow::anyhow!("连接 {addr} 超时"))?
         .with_context(|| format!("连接 {addr} 失败"))?;

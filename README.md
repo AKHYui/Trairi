@@ -682,6 +682,8 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
 
 ## 12. Changelog
 
+- **0.3.3** (2026-11-12): rollback 0.3.2 direct-path preference after
+  `HANDSHAKE(REKEY_TIMEOUT)` regression; restore 0.3.1 path behavior.
 - **0.3.2** (2026-11-12): prefer direct overlay paths.
   - Direct has a 5-second grace window before relay locks.
   - A direct handshake response can reclaim a relay-locked peer.

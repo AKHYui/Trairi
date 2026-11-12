@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.3 — 2026-11-12
+
+- Reverted the 0.3.2 direct-path grace/relay preference change. It caused a
+  regression where a slow or one-way direct path was forced to relay after
+  5 seconds, and relay cannot reach a server-node peer (server node has no
+  relay registration). Result: `HANDSHAKE(REKEY_TIMEOUT)` and complete overlay
+  outage for server-node `.1`.
+- Restored the 0.3.1 path-selection behavior until direct-path arbitration can
+  be redesigned and tested with real NAT.
+
 ## 0.3.2 — 2026-11-12
 
 - Overlay path selection now prefers direct when a peer has a usable UDP

@@ -124,11 +124,9 @@ impl P2pNode {
 
         // 解析会合服务端地址，启动周期性探针。
         let server = format!("{}:{}", cc.server_addr, server_p2p_port);
-        let probe_addr = tokio::net::lookup_host(&server)
+        let probe_addr = crate::transport::resolve_server_addr(&cc.server_addr, server_p2p_port)
             .await
-            .with_context(|| format!("解析 P2P 会合地址 {server} 失败"))?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("P2P 会合地址 {server} 没有可用结果"))?;
+            .with_context(|| format!("解析 P2P 会合地址 {server} 失败"))?;
 
         // 通过一条临时 UDP socket 查看到会合服务端所使用的本机出口 IP。
         let local_endpoint = match UdpSocket::bind("0.0.0.0:0").await {
