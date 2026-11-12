@@ -153,7 +153,7 @@ impl NodeHandle {
             };
             {
                 let mut g = peer.lock().await;
-                g.endpoint = spec.endpoint;
+                g.update_endpoint(spec.endpoint);
             }
             if let Some(ep) = spec.endpoint {
                 eps.insert(ep, spec.ip);
@@ -208,7 +208,7 @@ pub async fn start_node(
             )));
             {
                 let mut g = peer.lock().await;
-                g.endpoint = spec.endpoint;
+                g.update_endpoint(spec.endpoint);
             }
             if let Some(ep) = spec.endpoint {
                 eps.insert(ep, spec.ip);

@@ -347,7 +347,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-当前测试规模：77 个单元测试、17 个端口转发端到端测试、8 个 overlay 集成测试。
+当前测试规模：79 个单元测试、17 个端口转发端到端测试、8 个 overlay 集成测试。
 
 集成测试会在同一进程里起真实的 server + client，覆盖：
 
@@ -629,6 +629,10 @@ trairi overlay cleanup --interface trairi0   # 进程被强杀后清理残留网
 
 ## 12. 版本记录
 
+- **0.3.2**（2026-11-12）：优先直连。
+  - 直连有 5 秒宽限期，中继不再一收到包就抢占直连；
+  - 收到对端直连握手响应后可以从 relay 切回 direct；
+  - 对端 endpoint 新增或变化时会重新评估直连，不会永久锁在 relay。
 - **0.3.1**（2026-11-12）：修复 overlay 端口默认值。
   - `server.kcp` 改为默认 `false`，避免它悄悄占用 UDP `bind_port` 与
     `overlay.udp_port` 冲突；

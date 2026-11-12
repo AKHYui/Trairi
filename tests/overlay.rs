@@ -564,6 +564,9 @@ async fn relay_rescues_when_direct_path_is_dead() {
         .expect("设备通道被关闭");
     assert_eq!(back, pkt2);
 
+    // Give the direct grace window time to expire; both nodes should settle
+    // on relay when the direct endpoints are dead.
+    tokio::time::sleep(Duration::from_secs(6)).await;
     assert_eq!(node_a.relayed_peers().await, 1, "A 应该锁定中继");
     assert_eq!(node_b.relayed_peers().await, 1, "B 应该锁定中继");
 }

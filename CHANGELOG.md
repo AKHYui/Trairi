@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2 — 2026-11-12
+
+- Overlay path selection now prefers direct when a peer has a usable UDP
+  endpoint. Relay packets no longer preempt a direct handshake immediately.
+- Added a 5-second relay grace window; if no direct handshake response arrives,
+  relay takes over. A direct handshake response can reclaim the peer from relay.
+- When the coordinator later learns or changes a peer endpoint, the peer is
+  re-evaluated for direct instead of staying relay-locked forever.
+- This targets Android/cellular or Wi-Fi clients that were falling back to the
+  signaling server even when UDP hole punching could work.
+
 ## 0.3.1 — 2026-11-12
 
 - `server.kcp` now defaults to **false**, so KCP does not silently occupy UDP

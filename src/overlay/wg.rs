@@ -79,6 +79,10 @@ pub fn wg_message_type(datagram: &[u8]) -> Option<u8> {
 /// 才退回双路径让中继接管。不能只看“多久没收到包”——空闲对端本来就不发包，
 /// 误回退会让双路径的重复保活把对端也带到中继上。
 const DIRECT_LOCK_IDLE: Duration = Duration::from_secs(15);
+/// Give a newly-learned direct path a head start before accepting relay.
+/// Without this, a fast relay handshake can lock the peer to relay before
+/// the UDP hole punch has time to complete.
+const RELAY_GRACE: Duration = Duration::from_secs(5);
 
 /// 一个 WireGuard 对端。
 pub struct WgPeer {
@@ -92,6 +96,8 @@ pub struct WgPeer {
     /// 最近一次从各路径收到通过认证的报文。
     direct_rx_at: Option<Instant>,
     relay_rx_at: Option<Instant>,
+    /// First authenticated packet seen on relay; starts the direct grace window.
+    relay_first_rx_at: Option<Instant>,
     /// 最近一次真正发出业务数据（非保活/握手）的时间。
     data_tx_at: Option<Instant>,
     created: std::time::Instant,
@@ -122,6 +128,7 @@ impl WgPeer {
             owner: None,
             direct_rx_at: None,
             relay_rx_at: None,
+            relay_first_rx_at: None,
             data_tx_at: None,
             created: Instant::now(),
         }
@@ -236,6 +243,15 @@ impl WgPeer {
     /// 在判定清楚之前两条路都发，谁先带回对端的认证报文，就锁定谁。
     pub fn send_paths(&mut self, relay_available: bool) -> SendPaths {
         self.expire_direct_lock();
+        if self.owner.is_none()
+            && self.endpoint.is_some()
+            && relay_available
+            && self
+                .relay_first_rx_at
+                .is_some_and(|t| t.elapsed() >= RELAY_GRACE)
+        {
+            self.set_owner(Path::Relay, "直连宽限期结束");
+        }
         match self.owner {
             Some(Path::Direct) if self.endpoint.is_some() => SendPaths {
                 direct: true,
@@ -270,18 +286,45 @@ impl WgPeer {
     /// - **直连**：收到数据包只能证明入向通；只有收到 **握手响应(2)** 或
     ///   **cookie 回复(3)** 才能证明我们发出的握手真的到了对端（出向也通）。
     ///   所以直连只在类型 2/3 且尚未锁定时才锁定。
+    /// Update the endpoint and re-open path selection when it changes.
+    /// A peer may initially have no endpoint (relay-only) and receive a
+    /// public UDP endpoint later from the coordinator. In that case the
+    /// relay lock must not prevent trying direct.
+    pub fn update_endpoint(&mut self, endpoint: Option<SocketAddr>) {
+        if self.endpoint == endpoint {
+            return;
+        }
+        self.endpoint = endpoint;
+        if endpoint.is_some() {
+            self.owner = None;
+            self.relay_first_rx_at = Some(Instant::now());
+        }
+    }
+
+    /// 记录从某条路径收到了对端报文。
+    ///
+    /// 直连收到握手响应（类型 2/3）是最强证据：对端的回包真的从 direct
+    /// 回来了，因此 direct 即使先前被 relay 锁定，也可以重新夺回归属。
+    /// relay 收到报文只说明对端可达，不能立刻抢走仍有机会直连的 peer；
+    /// 先启动一个 grace window，超过后才用 relay 兜底。
     pub fn note_inbound(&mut self, path: Path, msg_type: Option<u8>) {
         let now = Instant::now();
         match path {
             Path::Relay => {
                 self.relay_rx_at = Some(now);
-                if msg_type.is_some() {
-                    self.set_owner(Path::Relay, "中继收到对端报文");
+                if msg_type.is_none() {
+                    return;
                 }
+                self.relay_first_rx_at.get_or_insert(now);
+                if self.endpoint.is_none() {
+                    self.set_owner(Path::Relay, "没有可用的直连 endpoint");
+                }
+                // With an endpoint, keep the grace window open and let
+                // send_paths() decide after RELAY_GRACE.
             }
             Path::Direct => {
                 self.direct_rx_at = Some(now);
-                if self.owner.is_none() && matches!(msg_type, Some(2) | Some(3)) {
+                if self.endpoint.is_some() && matches!(msg_type, Some(2) | Some(3)) {
                     self.set_owner(Path::Direct, "直连收到对端握手响应");
                 }
             }
@@ -434,17 +477,16 @@ mod tests {
     }
 
     #[test]
-    fn relay_packet_locks_relay_and_overrides_direct() {
+    fn relay_packet_does_not_preempt_direct() {
         let mut p = test_peer(ep(5000));
         p.note_inbound(Path::Direct, Some(2));
         assert_eq!(p.owner(), Some(Path::Direct));
 
         // 对端改走中继 -> 我们的回包必须跟着走中继
         p.note_inbound(Path::Relay, Some(1));
-        assert_eq!(p.owner(), Some(Path::Relay));
+        assert_eq!(p.owner(), Some(Path::Direct));
         let paths = p.send_paths(true);
-        assert!(!paths.direct && paths.relay);
-        assert!(p.is_relay_locked());
+        assert!(paths.direct && !paths.relay);
     }
 
     #[test]
@@ -452,6 +494,30 @@ mod tests {
         let mut p = test_peer(ep(5000));
         p.note_inbound(Path::Relay, None);
         assert_eq!(p.owner(), None);
+    }
+
+    #[test]
+    fn relay_waits_for_direct_grace() {
+        let mut p = test_peer(ep(5000));
+        p.note_inbound(Path::Relay, Some(1));
+        assert_eq!(p.owner(), None);
+        let paths = p.send_paths(true);
+        assert!(paths.direct && paths.relay);
+
+        p.relay_first_rx_at = Some(Instant::now() - RELAY_GRACE);
+        let paths = p.send_paths(true);
+        assert!(!paths.direct && paths.relay);
+        assert_eq!(p.owner(), Some(Path::Relay));
+    }
+
+    #[test]
+    fn direct_can_reclaim_from_relay() {
+        let mut p = test_peer(ep(5000));
+        p.force_relay();
+        p.note_inbound(Path::Direct, Some(2));
+        assert_eq!(p.owner(), Some(Path::Direct));
+        let paths = p.send_paths(true);
+        assert!(paths.direct && !paths.relay);
     }
 
     #[test]

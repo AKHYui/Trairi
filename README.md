@@ -366,7 +366,7 @@ cargo test
 cargo clippy --all-targets
 ```
 
-Current test suite: 77 unit tests, 17 port-forwarding end-to-end tests, and
+Current test suite: 79 unit tests, 17 port-forwarding end-to-end tests, and
 8 overlay integration tests.
 
 The integration tests start a real server + client in one process and cover:
@@ -682,6 +682,10 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
 
 ## 12. Changelog
 
+- **0.3.2** (2026-11-12): prefer direct overlay paths.
+  - Direct has a 5-second grace window before relay locks.
+  - A direct handshake response can reclaim a relay-locked peer.
+  - New/changed peer endpoints re-open direct path selection.
 - **0.3.1** (2026-11-12): fix overlay port defaults.
   - `server.kcp` is opt-in (`false` by default) so it cannot silently occupy
     UDP `bind_port` when `overlay.udp_port` uses the same port.
