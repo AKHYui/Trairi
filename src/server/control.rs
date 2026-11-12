@@ -324,6 +324,7 @@ async fn control_loop(
                             error: e.to_string(),
                             proxy_name,
                             peer_endpoint: String::new(),
+                            peer_local_endpoint: String::new(),
                         })
                         .await;
                 }
@@ -469,26 +470,34 @@ async fn handle_p2p_request(
         .endpoint(&visitor.run_id)
         .await
         .ok_or_else(|| anyhow::anyhow!("访问者还没有 P2P UDP endpoint"))?;
+    let owner_local = owner_ep.local.map(|a| a.to_string()).unwrap_or_default();
+    let visitor_local = visitor_ep.local.map(|a| a.to_string()).unwrap_or_default();
 
     visitor
         .send(ControlMsg::P2pInfo {
             ok: true,
             error: String::new(),
             proxy_name: proxy_name.to_string(),
-            peer_endpoint: owner_ep.to_string(),
+            peer_endpoint: owner_ep.public.to_string(),
+            peer_local_endpoint: owner_local.clone(),
         })
         .await;
     if !proxy
         .client
         .send(ControlMsg::P2pPeer {
             proxy_name: proxy_name.to_string(),
-            peer_endpoint: visitor_ep.to_string(),
+            peer_endpoint: visitor_ep.public.to_string(),
+            peer_local_endpoint: visitor_local.clone(),
         })
         .await
     {
         bail!("无法通知代理持有者");
     }
-    tracing::info!("P2P 会合 [{proxy_name}]: owner={owner_ep} visitor={visitor_ep}");
+    tracing::info!(
+        "P2P 会合 [{proxy_name}]: owner={} ({owner_local}) visitor={} ({visitor_local})",
+        owner_ep.public,
+        visitor_ep.public
+    );
     Ok(())
 }
 

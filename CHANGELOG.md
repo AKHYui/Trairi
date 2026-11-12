@@ -4,7 +4,8 @@
 
 - Added P2P proxy (`type: p2p`): server rendezvous exchanges UDP endpoints,
   owner/visitor punch through and use KCP + smux for a direct encrypted path,
-  with automatic server-relay fallback.
+  with automatic server-relay fallback. Same-LAN peers try their private
+  endpoints first.
 - Added KCP (reliable UDP) transport: `protocol: kcp`; the server listens for
   KCP on UDP `bind_port` when `server.kcp` is enabled (default true). The
   existing token/HMAC and ChaCha20-Poly1305 record layer are reused.

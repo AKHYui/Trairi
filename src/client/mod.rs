@@ -386,11 +386,13 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
                         error,
                         proxy_name,
                         peer_endpoint,
+                        peer_local_endpoint,
                     } => {
                         if ok {
                             if let Ok(ep) = peer_endpoint.parse() {
+                                let local = peer_local_endpoint.parse().ok();
                                 if let Some(node) = &p2p_node {
-                                    node.set_peer(&proxy_name, ep).await;
+                                    node.set_peer(&proxy_name, ep, local).await;
                                 }
                             }
                         } else {
@@ -400,10 +402,12 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
                     ControlMsg::P2pPeer {
                         proxy_name,
                         peer_endpoint,
+                        peer_local_endpoint,
                     } => {
                         if let Ok(ep) = peer_endpoint.parse() {
+                            let local = peer_local_endpoint.parse().ok();
                             if let Some(node) = &p2p_node {
-                                node.set_peer(&proxy_name, ep).await;
+                                node.set_peer(&proxy_name, ep, local).await;
                             }
                         }
                     }

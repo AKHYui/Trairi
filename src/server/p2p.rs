@@ -13,8 +13,14 @@ use crate::p2p::parse_probe;
 
 const ENDPOINT_TTL: Duration = Duration::from_secs(120);
 
+#[derive(Debug, Clone, Copy)]
+pub struct PeerEndpoint {
+    pub public: SocketAddr,
+    pub local: Option<SocketAddr>,
+}
+
 pub struct P2pRendezvous {
-    endpoints: RwLock<HashMap<String, (SocketAddr, Instant)>>,
+    endpoints: RwLock<HashMap<String, (PeerEndpoint, Instant)>>,
     token: String,
 }
 
@@ -34,7 +40,7 @@ impl P2pRendezvous {
         Ok(this)
     }
 
-    pub async fn endpoint(&self, run_id: &str) -> Option<SocketAddr> {
+    pub async fn endpoint(&self, run_id: &str) -> Option<PeerEndpoint> {
         self.endpoints
             .read()
             .await
@@ -49,13 +55,16 @@ impl P2pRendezvous {
                 continue;
             };
             let now = now_secs();
-            let Some(run_id) = parse_probe(&self.token, &buf[..n], now) else {
+            let Some((run_id, local)) = parse_probe(&self.token, &buf[..n], now) else {
                 continue;
             };
             {
                 let mut map = self.endpoints.write().await;
                 map.retain(|_, (_, t)| t.elapsed() < ENDPOINT_TTL);
-                map.insert(run_id, (src, Instant::now()));
+                map.insert(
+                    run_id,
+                    (PeerEndpoint { public: src, local }, Instant::now()),
+                );
             }
             tracing::debug!("P2P 会合: {src}");
         }

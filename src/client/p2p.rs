@@ -35,6 +35,12 @@ struct Pending {
     tx: PendingSender,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PeerAddrs {
+    public: SocketAddr,
+    local: Option<SocketAddr>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 enum P2pFrame {
@@ -59,7 +65,7 @@ enum P2pFrame {
 pub struct P2pNode {
     socket: Arc<UdpSocket>,
     local: SocketAddr,
-    peers: Arc<RwLock<HashMap<String, SocketAddr>>>,
+    peers: Arc<RwLock<HashMap<String, PeerAddrs>>>,
     pending: Arc<Mutex<Option<Pending>>>,
     sessions: Arc<Mutex<HashMap<String, Arc<SmuxSession>>>>,
     establish_lock: Arc<Mutex<()>>,
@@ -123,6 +129,22 @@ impl P2pNode {
             .with_context(|| format!("解析 P2P 会合地址 {server} 失败"))?
             .next()
             .ok_or_else(|| anyhow::anyhow!("P2P 会合地址 {server} 没有可用结果"))?;
+
+        // 通过一条临时 UDP socket 查看到会合服务端所使用的本机出口 IP。
+        let local_endpoint = match UdpSocket::bind("0.0.0.0:0").await {
+            Ok(route) => match route.connect(probe_addr).await {
+                Ok(()) => match route.local_addr() {
+                    Ok(a) if a.is_ipv4() => Some(SocketAddr::new(a.ip(), local.port())),
+                    _ => None,
+                },
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+        if let Some(ep) = local_endpoint {
+            tracing::info!("P2P 本机 endpoint: {ep}");
+        }
+
         {
             let socket = socket.clone();
             let token = cc.token.clone();
@@ -133,7 +155,7 @@ impl P2pNode {
                 loop {
                     tokio::select! {
                         _ = ticker.tick() => {
-                            let pkt = probe_packet(&token, &run_id, now_secs());
+                            let pkt = probe_packet(&token, &run_id, now_secs(), local_endpoint);
                             let _ = socket.send_to(&pkt, probe).await;
                         }
                         _ = shutdown.notified() => break,
@@ -147,17 +169,20 @@ impl P2pNode {
     }
 
     /// 控制面收到 P2pInfo/P2pPeer 后更新对端 endpoint。
-    pub async fn set_peer(&self, proxy_name: &str, endpoint: SocketAddr) {
+    pub async fn set_peer(&self, proxy_name: &str, public: SocketAddr, local: Option<SocketAddr>) {
         self.peers
             .write()
             .await
-            .insert(proxy_name.to_string(), endpoint);
-        // owner 主动向 visitor 发一个短打洞包，打开自己的 NAT 映射。
+            .insert(proxy_name.to_string(), PeerAddrs { public, local });
+        // owner 主动向 visitor 发短打洞包，打开自己的 NAT 映射。
         if self.proxies.contains_key(proxy_name) {
             let socket = self.socket.clone();
+            let targets: Vec<SocketAddr> = local.into_iter().chain([public]).collect();
             tokio::spawn(async move {
                 for _ in 0..3 {
-                    let _ = socket.send_to(punch_packet(), endpoint).await;
+                    for target in &targets {
+                        let _ = socket.send_to(punch_packet(), target).await;
+                    }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             });
@@ -199,6 +224,34 @@ impl P2pNode {
         let peer = self
             .wait_peer(proxy_name, Duration::from_millis(2500))
             .await?;
+        let mut candidates = Vec::new();
+        if let Some(local) = peer.local
+            && local != peer.public
+        {
+            candidates.push((local, Duration::from_millis(1500)));
+        }
+        candidates.push((peer.public, P2P_CONNECT_TIMEOUT));
+
+        let mut last_err = None;
+        for (endpoint, timeout) in candidates {
+            match self.establish_to(proxy_name, sk, endpoint, timeout).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    tracing::debug!("P2P 尝试 {endpoint} 失败: {e:#}");
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("没有可用的 P2P endpoint")))
+    }
+
+    async fn establish_to(
+        &self,
+        proxy_name: &str,
+        sk: &str,
+        peer: SocketAddr,
+        connect_timeout: Duration,
+    ) -> Result<crate::stream::Stream> {
         let conv = random_conv();
         tracing::info!("P2P[{}] establish {proxy_name} -> {peer}", self.local);
         let (tx, rx) = oneshot::channel();
@@ -217,22 +270,21 @@ impl P2pNode {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        let (mut stream, nonce, timestamp) =
-            match tokio::time::timeout(P2P_CONNECT_TIMEOUT, rx).await {
-                Ok(Ok(Ok(v))) => v,
-                Ok(Ok(Err(e))) => {
-                    *self.pending.lock().await = None;
-                    bail!("P2P 会话失败: {e}");
-                }
-                Ok(Err(_)) => {
-                    *self.pending.lock().await = None;
-                    bail!("P2P 会话被取消");
-                }
-                Err(_) => {
-                    *self.pending.lock().await = None;
-                    bail!("P2P 连接 {peer} 超时");
-                }
-            };
+        let (mut stream, nonce, timestamp) = match tokio::time::timeout(connect_timeout, rx).await {
+            Ok(Ok(Ok(v))) => v,
+            Ok(Ok(Err(e))) => {
+                *self.pending.lock().await = None;
+                bail!("P2P 会话失败: {e}");
+            }
+            Ok(Err(_)) => {
+                *self.pending.lock().await = None;
+                bail!("P2P 会话被取消");
+            }
+            Err(_) => {
+                *self.pending.lock().await = None;
+                bail!("P2P 连接 {peer} 超时");
+            }
+        };
 
         *self.pending.lock().await = None;
         let auth = P2pFrame::Auth {
@@ -253,7 +305,7 @@ impl P2pNode {
         }
     }
 
-    async fn wait_peer(&self, proxy_name: &str, timeout: Duration) -> Result<SocketAddr> {
+    async fn wait_peer(&self, proxy_name: &str, timeout: Duration) -> Result<PeerAddrs> {
         if let Some(peer) = self.peers.read().await.get(proxy_name).copied() {
             return Ok(peer);
         }

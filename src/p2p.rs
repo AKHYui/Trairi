@@ -25,24 +25,42 @@ fn hmac_hex(key: &[u8], parts: &[&[u8]]) -> String {
     out.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 生成服务端会合探针。
-pub fn probe_packet(token: &str, run_id: &str, timestamp: i64) -> Vec<u8> {
+/// 生成服务端会合探针。`local` 是客户端自己的局域网 endpoint，
+/// 服务端会把它一并交换给对端，用于同一 NAT 内的局域网直连。
+pub fn probe_packet(
+    token: &str,
+    run_id: &str,
+    timestamp: i64,
+    local: Option<std::net::SocketAddr>,
+) -> Vec<u8> {
+    let local = local.map(|a| a.to_string()).unwrap_or_default();
     let mac = hmac_hex(
         token.as_bytes(),
-        &[PROBE_DOMAIN, run_id.as_bytes(), &timestamp.to_be_bytes()],
+        &[
+            PROBE_DOMAIN,
+            run_id.as_bytes(),
+            &timestamp.to_be_bytes(),
+            local.as_bytes(),
+        ],
     );
-    let mut out = Vec::with_capacity(8 + 8 + 2 + run_id.len() + 64);
+    let mut out = Vec::with_capacity(8 + 8 + 2 + run_id.len() + 2 + local.len() + 64);
     out.extend_from_slice(PROBE_MAGIC);
     out.extend_from_slice(&timestamp.to_be_bytes());
     out.extend_from_slice(&(run_id.len() as u16).to_be_bytes());
     out.extend_from_slice(run_id.as_bytes());
+    out.extend_from_slice(&(local.len() as u16).to_be_bytes());
+    out.extend_from_slice(local.as_bytes());
     out.extend_from_slice(mac.as_bytes());
     out
 }
 
-/// 校验会合探针，返回 run_id。
-pub fn parse_probe(token: &str, data: &[u8], now: i64) -> Option<String> {
-    if data.len() < 8 + 8 + 2 + 64 || &data[..8] != PROBE_MAGIC {
+/// 校验会合探针，返回 `(run_id, 本地 endpoint)`。
+pub fn parse_probe(
+    token: &str,
+    data: &[u8],
+    now: i64,
+) -> Option<(String, Option<std::net::SocketAddr>)> {
+    if data.len() < 8 + 8 + 2 + 2 + 64 || &data[..8] != PROBE_MAGIC {
         return None;
     }
     let mut off = 8;
@@ -50,7 +68,7 @@ pub fn parse_probe(token: &str, data: &[u8], now: i64) -> Option<String> {
     off += 8;
     let len = u16::from_be_bytes(data[off..off + 2].try_into().ok()?) as usize;
     off += 2;
-    if len == 0 || len > MAX_RUN_ID || data.len() != off + len + 64 {
+    if len == 0 || len > MAX_RUN_ID || data.len() < off + len + 2 + 64 {
         return None;
     }
     if (now - ts).abs() > MAX_SKEW_SECS {
@@ -58,15 +76,32 @@ pub fn parse_probe(token: &str, data: &[u8], now: i64) -> Option<String> {
     }
     let run_id = std::str::from_utf8(&data[off..off + len]).ok()?;
     off += len;
+    let local_len = u16::from_be_bytes(data[off..off + 2].try_into().ok()?) as usize;
+    off += 2;
+    if data.len() != off + local_len + 64 {
+        return None;
+    }
+    let local_str = std::str::from_utf8(&data[off..off + local_len]).ok()?;
+    off += local_len;
+    let local = if local_str.is_empty() {
+        None
+    } else {
+        local_str.parse().ok()
+    };
     let got = &data[off..off + 64];
     let expect = hmac_hex(
         token.as_bytes(),
-        &[PROBE_DOMAIN, run_id.as_bytes(), &ts.to_be_bytes()],
+        &[
+            PROBE_DOMAIN,
+            run_id.as_bytes(),
+            &ts.to_be_bytes(),
+            local_str.as_bytes(),
+        ],
     );
     if expect.as_bytes().ct_eq(got).unwrap_u8() != 1 {
         return None;
     }
-    Some(run_id.to_string())
+    Some((run_id.to_string(), local))
 }
 
 /// 打洞包故意短于 KCP 头（24 字节），避免被 KCP listener 当成会话。
@@ -114,8 +149,12 @@ mod tests {
 
     #[test]
     fn probe_roundtrip_and_tamper() {
-        let pkt = probe_packet("token", "run-1", 1000);
-        assert_eq!(parse_probe("token", &pkt, 1000).as_deref(), Some("run-1"));
+        let local: std::net::SocketAddr = "192.168.1.10:5000".parse().unwrap();
+        let pkt = probe_packet("token", "run-1", 1000, Some(local));
+        assert_eq!(
+            parse_probe("token", &pkt, 1000),
+            Some(("run-1".to_string(), Some(local)))
+        );
         assert!(parse_probe("wrong", &pkt, 1000).is_none());
         assert!(parse_probe("token", &pkt, 2000).is_none());
         let mut bad = pkt;

@@ -294,7 +294,8 @@ visitors:
 ```
 
 服务端只交换双方 UDP endpoint；owner/visitor 打洞成功后走 KCP + smux 直连，
-失败则回退普通服务器中继。`sk` 同时用于 HMAC 认证和派生 P2P 记录层密钥。
+同一局域网内会优先尝试对方的私网 endpoint，再尝试公网 endpoint；失败则回退普通
+服务器中继。`sk` 同时用于 HMAC 认证和派生 P2P 记录层密钥。
 
 P2P 在至少一端有公网/可达 UDP endpoint 时效果最好；对称 NAT 或 UDP 被封会
 回退中继。一个 KCP 会话通过 smux 承载 visitor 侧的多条 TCP 连接。

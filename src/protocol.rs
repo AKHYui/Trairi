@@ -253,10 +253,14 @@ pub enum ControlMsg {
         proxy_name: String,
         #[serde(default)]
         peer_endpoint: String,
+        #[serde(default)]
+        peer_local_endpoint: String,
     },
     P2pPeer {
         proxy_name: String,
         peer_endpoint: String,
+        #[serde(default)]
+        peer_local_endpoint: String,
     },
 }
 

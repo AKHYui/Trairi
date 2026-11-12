@@ -308,9 +308,10 @@ visitors:
 ```
 
 The server only exchanges endpoints. The owner and visitor punch UDP and use
-KCP + smux for a direct encrypted path; if punching fails, the visitor falls
-back to the normal server relay. The `sk` is used for HMAC authentication and
-to derive the P2P record-layer key.
+KCP + smux for a direct encrypted path; same-LAN peers try their private
+endpoints first, then the public endpoints. If punching fails, the visitor
+falls back to the normal server relay. The `sk` is used for HMAC authentication
+and to derive the P2P record-layer key.
 
 P2P works best when at least one side has a reachable/public UDP endpoint.
 Symmetric NAT or a UDP-blocking firewall may force relay fallback. One KCP
