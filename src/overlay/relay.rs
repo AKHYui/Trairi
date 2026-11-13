@@ -109,8 +109,13 @@ pub async fn spawn_relay_server(
 
     tokio::spawn(async move {
         loop {
-            let Ok((conn, peer)) = listener.accept().await else {
-                continue;
+            let (conn, peer) = match listener.accept().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!("中继 accept 失败: {e}");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
             };
             let Ok(permit) = slots.clone().try_acquire_owned() else {
                 tracing::warn!("中继连接数已达上限 {MAX_RELAY_CONNS}，拒绝 {peer}");

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.4 — 2026-11-13
+
+- Fixed CPU spin when overlay/UDP/relay `recv` or `accept` returns a persistent
+  error (for example ICMP port unreachable). The loops now back off 200 ms
+  instead of immediately retrying.
+- This targets long-running 100% CPU in server/client processes, especially
+  after a failed direct path leaves an unreachable UDP endpoint.
+
 ## 0.3.3 — 2026-11-12
 
 - Reverted the 0.3.2 direct-path grace/relay preference change. It caused a

@@ -254,8 +254,13 @@ impl OverlayCoordinator {
         tokio::spawn(async move {
             let mut buf = vec![0u8; 2048];
             loop {
-                let Ok((n, src)) = sock.recv_from(&mut buf).await else {
-                    continue;
+                let (n, src) = match sock.recv_from(&mut buf).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::debug!("overlay UDP 接收失败: {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        continue;
+                    }
                 };
                 // STUN 绑定请求
                 if crate::overlay::stun::is_stun(&buf[..n]) {
@@ -284,8 +289,13 @@ impl OverlayCoordinator {
             tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
                 loop {
-                    let Ok((n, src)) = stun.recv_from(&mut buf).await else {
-                        continue;
+                    let (n, src) = match stun.recv_from(&mut buf).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::debug!("overlay STUN 接收失败: {e}");
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            continue;
+                        }
                     };
                     if !crate::overlay::stun::is_stun(&buf[..n]) {
                         continue;

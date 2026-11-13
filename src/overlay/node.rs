@@ -389,6 +389,9 @@ fn spawn_udp_receiver(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::debug!("overlay UDP 接收失败: {e}");
+                    // A persistent socket error (for example ICMP port
+                    // unreachable) must not turn this into a busy loop.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;
                 }
             };
