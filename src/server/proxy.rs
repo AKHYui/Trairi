@@ -164,6 +164,7 @@ pub async fn start_udp_listener(
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!("UDP 接收失败: {e}");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;
                 }
             };

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.5 — 2026-11-13
+
+- Added the same 200 ms error backoff to the remaining UDP receive loops:
+  server P2P rendezvous and server UDP proxy.
+- These loops could still spin when a long-lived UDP socket returned errors
+  repeatedly.
+
 ## 0.3.4 — 2026-11-13
 
 - Fixed CPU spin when overlay/UDP/relay `recv` or `accept` returns a persistent

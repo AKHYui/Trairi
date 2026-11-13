@@ -51,8 +51,13 @@ impl P2pRendezvous {
     async fn run(&self, socket: UdpSocket) {
         let mut buf = [0u8; 2048];
         loop {
-            let Ok((n, src)) = socket.recv_from(&mut buf).await else {
-                continue;
+            let (n, src) = match socket.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!("P2P 会合接收失败: {e}");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
             };
             let now = now_secs();
             let Some((run_id, local)) = parse_probe(&self.token, &buf[..n], now) else {
