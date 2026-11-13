@@ -1329,8 +1329,6 @@ checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 [[package]]
 name = "smux"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "876b407b0d181fbecbd75a5c6a0191d82d11a00972a6f06731e4d9e00b5da5fe"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1660,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "trairi"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "async-trait",

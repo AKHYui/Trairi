@@ -682,6 +682,7 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
 
 ## 12. Changelog
 
+- **0.3.6** (2026-11-13): vendor-fix smux idle-stream self-wake; fixes 100% CPU.
 - **0.3.5** (2026-11-13): back off on server P2P/proxy UDP receive errors too.
 - **0.3.4** (2026-11-13): back off on persistent overlay UDP/relay errors
   instead of spinning at 100% CPU.

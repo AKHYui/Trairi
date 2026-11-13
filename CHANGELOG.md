@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.6 — 2026-11-13
+
+- Fixed the real 100% CPU cause: the vendored `smux 0.2.0` `Stream::poll_read`
+  called `cx.waker().wake_by_ref()` whenever the stream's data channel was
+  empty. An idle mux stream therefore busy-woke itself forever, pinning every
+  tokio worker. The vendored stream now registers a real flume `recv_async`
+  waker and stays pending until data arrives.
+- Verified locally with one core server + one core client in WSL: idle CPU
+  dropped from ~100% per worker to 0.0%.
+- This supersedes the 0.3.4/0.3.5 UDP-loop backoff changes, which were not the
+  primary cause.
+
 ## 0.3.5 — 2026-11-13
 
 - Added the same 200 ms error backoff to the remaining UDP receive loops:

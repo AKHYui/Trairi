@@ -1,6 +1,6 @@
 [package]
 name = "trairi"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 description = "A single-binary reverse proxy and WireGuard overlay networking tool written in Rust"
 license = "MIT"
@@ -49,3 +49,6 @@ tun = { version = "0.8.14", features = ["async"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 libc = "0.2"
+
+[patch.crates-io]
+smux = { path = 'vendor/smux' }
