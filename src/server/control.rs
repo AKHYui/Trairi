@@ -141,11 +141,30 @@ pub async fn handle_connection(state: Arc<ServerState>, accepted: Accepted) -> R
         .map_err(|_| anyhow::anyhow!("等待登录包超时"))?
         .context("读取登录包失败")?;
 
-    let run_id = if login.run_id.is_empty() {
+    let mut run_id = if login.run_id.is_empty() {
         format!("{}-{}", crate::util::random_hex(4), login.hostname)
     } else {
         login.run_id.clone()
     };
+
+    // Two different devices may both use a generic hostname such as
+    // "unknown". Do not let the new login kick the other device off the whole
+    // overlay: only a reconnect from the same source IP replaces the old
+    // control connection; otherwise allocate a unique run_id.
+    {
+        let clients = state.clients.read().await;
+        if let Some(existing) = clients.get(&run_id) {
+            let same_ip = existing
+                .remote_addr
+                .rsplit_once(':')
+                .map(|(ip, _)| ip.trim_matches(['[', ']']) == peer.ip().to_string())
+                .unwrap_or(false);
+            if !same_ip {
+                run_id = format!("{run_id}-{}", crate::util::random_hex(3));
+                tracing::info!("客户端 run_id 冲突，改用唯一身份 {run_id}");
+            }
+        }
+    }
 
     let (tx, mut rx) = mpsc::channel::<ControlMsg>(256);
     let client = Arc::new(ClientHandle {
