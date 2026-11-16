@@ -195,7 +195,16 @@ async fn connect_once(cfg: Config, info: Arc<ClientInfo>) -> Result<()> {
     let (mut ctrl_r, mut ctrl_w) = tokio::io::split(ctrl);
 
     let run_id = if cc.run_id.is_empty() {
-        format!("{}-{}", hostname(), crate::util::random_hex(4))
+        // Keep the id stable across reconnects so the server reuses the same
+        // virtual IP. A random suffix creates a new member while the previous
+        // control connection is still draining, leaving a stale peer with the
+        // same public endpoint in every client's table.
+        let name = hostname();
+        if name.trim().is_empty() {
+            "trairi".to_string()
+        } else {
+            name
+        }
     } else {
         cc.run_id.clone()
     };

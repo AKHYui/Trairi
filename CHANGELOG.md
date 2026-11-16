@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.9 — 2026-11-16
+
+- The default client `run_id` is now stable (hostname) instead of
+  `hostname-<random>`. Reconnects reuse the same overlay member and virtual IP,
+  preventing a stale member with the same public endpoint from occupying the
+  old IP and causing `REKEY_TIMEOUT`.
+- Set `client.run_id` explicitly if multiple clients share a hostname.
+
 ## 0.3.8 — 2026-11-16
 
 - Overlay coordinator now prunes members whose control sender is gone before

@@ -494,6 +494,7 @@ async fn p2p_proxy_direct() {
             server_addr: "127.0.0.1".into(),
             server_port,
             token: token.into(),
+            run_id: "p2p-owner".into(),
             ..Default::default()
         },
         proxies: vec![ProxyConfig {
@@ -511,6 +512,7 @@ async fn p2p_proxy_direct() {
             server_addr: "127.0.0.1".into(),
             server_port,
             token: token.into(),
+            run_id: "p2p-visitor".into(),
             ..Default::default()
         },
         visitors: vec![VisitorConfig {
@@ -587,6 +589,7 @@ async fn p2p_fallback_relay() {
             server_addr: "127.0.0.1".into(),
             server_port,
             token: token.into(),
+            run_id: "p2p-relay-owner".into(),
             ..Default::default()
         },
         proxies: vec![ProxyConfig {
@@ -604,6 +607,7 @@ async fn p2p_fallback_relay() {
             server_addr: "127.0.0.1".into(),
             server_port,
             token: token.into(),
+            run_id: "p2p-relay-visitor".into(),
             ..Default::default()
         },
         visitors: vec![VisitorConfig {
