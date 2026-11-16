@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 — 2026-11-16
+
+- Dual-stack UDP overlay transport: clients bind one dual-stack UDP socket and
+  advertise a global IPv6 endpoint for IPv6 P2P.
+- Multiple endpoint candidates per peer (server-observed, IPv6, punch-learned).
+- Automatic UPnP IGD and NAT-PMP port mapping.
+- Bounded symmetric-NAT port prediction probes around observed peer ports.
+- Port convergence: server exposes only two external port numbers — 56000
+  (TCP control + UDP overlay/STUN) and 56002 (TCP relay + UDP server node).
+  The separate STUN port is gone; the server-node UDP socket shares 56002 with
+  the TCP relay listener.
+- Client run_id remains stable across reconnects; stale members are pruned.
+
 ## 0.3.10 — 2026-11-16
 
 - Client overlay startup now performs best-effort UPnP IGD port mapping for

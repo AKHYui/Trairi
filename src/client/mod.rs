@@ -616,13 +616,15 @@ async fn start_overlay(
 ) -> Result<()> {
     let (private, pubkey_b64) = overlay::generate_keypair();
 
-    let bind = format!("0.0.0.0:{}", cfg.overlay.udp_port);
     let socket = Arc::new(
-        tokio::net::UdpSocket::bind(&bind)
-            .await
-            .with_context(|| format!("overlay UDP 绑定 {bind} 失败"))?,
+        crate::overlay::bind_udp_dual(cfg.overlay.udp_port)
+            .with_context(|| format!("overlay UDP bind port {} failed", cfg.overlay.udp_port))?,
     );
     let port = socket.local_addr()?.port();
+    let ipv6 = overlay::local_ipv6().await.map(|v| v.to_string()).unwrap_or_default();
+    if !ipv6.is_empty() {
+        tracing::info!("overlay 本机 IPv6: {ipv6}");
+    }
 
     let (tx_a, rx_a) = oneshot::channel();
     *assign_slot.lock().unwrap() = Some(tx_a);
@@ -631,6 +633,7 @@ async fn start_overlay(
         &cfg.overlay,
         &pubkey_b64,
         port,
+        &ipv6,
     )))
     .await
     .map_err(|_| anyhow::anyhow!("控制连接已断开"))?;

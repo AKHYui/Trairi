@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "trairi"
-version = "0.3.10"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1682,6 +1682,7 @@ dependencies = [
  "sha2",
  "smux",
  "snap",
+ "socket2",
  "subtle",
  "thiserror 2.0.21",
  "tiny_http",

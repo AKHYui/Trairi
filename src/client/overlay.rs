@@ -65,6 +65,7 @@ impl OverlayClient {
                 ip,
                 pubkey: pk,
                 endpoint,
+                endpoints: p.endpoints.iter().filter_map(|s| node::parse_endpoint(s).ok().flatten()).collect(),
                 relay_allowed: !p.is_server,
             });
         }
@@ -165,8 +166,21 @@ pub async fn setup(
     // fatal: relay fallback remains.
     #[cfg(not(target_os = "android"))]
     {
-        if let Err(e) = crate::overlay::upnp::try_map(socket.as_ref()).await {
-            tracing::info!("UPnP 自动端口映射不可用: {e:#}");
+        let mapped = match crate::overlay::upnp::try_map(socket.as_ref()).await {
+            Ok(port) => Some(port),
+            Err(e) => {
+                tracing::info!("UPnP 自动端口映射不可用: {e:#}");
+                match crate::overlay::natpmp::try_map(socket.local_addr()?.port()).await {
+                    Ok(port) => Some(port),
+                    Err(e) => {
+                        tracing::info!("NAT-PMP 自动端口映射不可用: {e:#}");
+                        None
+                    }
+                }
+            }
+        };
+        if let Some(port) = mapped {
+            tracing::debug!("自动端口映射外部端口 {port}");
         }
     }
 
@@ -209,6 +223,7 @@ pub async fn setup(
                 ip,
                 pubkey: pk,
                 endpoint,
+                endpoints: p.endpoints.iter().filter_map(|s| node::parse_endpoint(s).ok().flatten()).collect(),
                 relay_allowed: !p.is_server,
             });
             ips.push(ip);
@@ -243,17 +258,20 @@ pub async fn setup(
         // 否则退化成同 IP 不同端口（结论较弱，只作参考）。
         let mut addr_b: Option<std::net::SocketAddr> = None;
         let mut strong = false;
-        if let Some(host) = cfg.stun_servers.first() {
-            if let Ok(mut it) = tokio::net::lookup_host(host.clone()).await {
-                addr_b = it.next();
+        let default_stun: &[&str] = &["stun.qq.com:3478", "stun.miwifi.com:3478"];
+        let stun_hosts: Vec<String> = if cfg.stun_servers.is_empty() {
+            default_stun.iter().map(|s| (*s).to_string()).collect()
+        } else {
+            cfg.stun_servers.clone()
+        };
+        for host in stun_hosts {
+            if let Ok(it) = tokio::net::lookup_host(host.clone()).await {
+                if let Some(a) = it.filter(|a| a.is_ipv4()).next() {
+                    addr_b = Some(a);
+                    strong = true;
+                    break;
+                }
             }
-            strong = true;
-        } else if assign.server_stun_port > 0 {
-            let b = format!("{server_host}:{}", assign.server_stun_port);
-            addr_b = tokio::net::lookup_host(&b)
-                .await
-                .ok()
-                .and_then(|mut it| it.next());
         }
 
         if let Some(addr_a) = addr_a {
@@ -358,12 +376,18 @@ pub fn generate_keypair() -> (StaticSecret, String) {
 }
 
 /// 构造注册消息。
-pub fn register_msg(cfg: &OverlayConfig, public_b64: &str, udp_port: u16) -> OverlayRegister {
+pub fn register_msg(
+    cfg: &OverlayConfig,
+    public_b64: &str,
+    udp_port: u16,
+    ipv6: &str,
+) -> OverlayRegister {
     OverlayRegister {
         network: cfg.network_name.clone(),
         secret_hash: secret_hash(&cfg.network_secret),
         pubkey: public_b64.to_string(),
         udp_port,
+        ipv6: ipv6.to_string(),
         // 只发 IP 部分，掩码由服务端按地址池决定
         hostname: crate::client::hostname_static(),
         proxy_networks: cfg.proxy_networks.clone(),
@@ -379,3 +403,57 @@ pub fn register_msg(cfg: &OverlayConfig, public_b64: &str, udp_port: u16) -> Ove
 
 /// 等待分配结果的超时。
 pub const ASSIGN_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Parse a 32-hex-character address from /proc/net/if_inet6.
+#[cfg(target_os = "linux")]
+fn hex_ipv6(s: &str) -> Result<std::net::Ipv6Addr> {
+    if s.len() != 32 {
+        anyhow::bail!("IPv6 hex length");
+    }
+    let mut octets = [0u8; 16];
+    for (i, byte) in octets.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)?;
+    }
+    Ok(std::net::Ipv6Addr::from(octets))
+}
+
+/// Best-effort global/local IPv6 address for dual-stack P2P signaling.
+pub async fn local_ipv6() -> Option<std::net::Ipv6Addr> {    #[cfg(target_os = "linux")]
+    {
+        // Prefer a global address with a normal prefix. The WSL/VM bridge can
+        // expose a /128 `...::1` address that is not routable from the peer.
+        if let Ok(text) = std::fs::read_to_string("/proc/net/if_inet6") {
+            let mut best = None;
+            for line in text.lines() {
+                let cols: Vec<&str> = line.split_whitespace().collect();
+                if cols.len() < 6 {
+                    continue;
+                }
+                let scope = u32::from_str_radix(cols[3], 16).unwrap_or(0);
+                let plen = u32::from_str_radix(cols[2], 16).unwrap_or(128);
+                if scope != 0 || plen >= 128 {
+                    continue;
+                }
+                let Ok(addr) = hex_ipv6(cols[0]) else {
+                    continue;
+                };
+                if addr.is_loopback() || addr.is_unspecified() {
+                    continue;
+                }
+                if best.is_none() {
+                    best = Some(addr);
+                }
+            }
+            if best.is_some() {
+                return best;
+            }
+        }
+    }
+
+    let sock = tokio::net::UdpSocket::bind("[::]:0").await.ok()?;
+    sock.connect("[2001:4860:4860::8888]:80").await.ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V6(v) if !v.is_unspecified() && !v.is_loopback() => Some(v),
+        _ => None,
+    }
+}

@@ -160,6 +160,9 @@ pub struct OverlayRegister {
     pub pubkey: String,
     /// 数据面 UDP 监听端口
     pub udp_port: u16,
+    /// 本机可用的公网/全球 IPv6 地址（可空），用于双栈 P2P。
+    #[serde(default)]
+    pub ipv6: String,
     /// 期望的虚拟 IP（可空，由服务端分配）
     #[serde(default)]
     pub want_ip: String,
@@ -180,6 +183,12 @@ pub struct OverlayPeerInfo {
     /// 服务端观测到的公网 endpoint（可能为空）
     #[serde(default)]
     pub endpoint: String,
+    /// 本节点的全球 IPv6 地址（可空）。
+    #[serde(default)]
+    pub ipv6: String,
+    /// All observed/learned endpoints for this peer, including IPv6.
+    #[serde(default)]
+    pub endpoints: Vec<String>,
     /// 这是服务端自己所在的节点（endpoint 由客户端用 server_addr 补齐）
     #[serde(default)]
     pub is_server: bool,

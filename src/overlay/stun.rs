@@ -192,12 +192,12 @@ pub async fn binding(socket: &UdpSocket, server: SocketAddr) -> Result<SocketAdd
         match tokio::time::timeout(left.min(Duration::from_millis(250)), socket.recv_from(&mut buf))
             .await
         {
-            Ok(Ok((n, from))) => {
+            Ok(Ok((n, _from))) => {
                 // 只认这个服务端回来的
-                if from.ip() != server.ip() {
-                    continue;
-                }
-                if let Some(addr) = parse_binding_response(&buf[..n]) {
+                if let Some(addr) = parse_binding_response(&buf[..n])
+                    && buf.len() >= 20
+                    && buf[8..20] == txid
+                {
                     return Ok(addr);
                 }
             }

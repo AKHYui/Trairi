@@ -16,17 +16,60 @@ pub mod device;
 pub mod host;
 pub mod hosts;
 pub mod node;
+pub mod natpmp;
 pub mod relay;
 pub mod stun;
 pub mod tunplat;
 pub mod upnp;
 pub mod wg;
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 
 use anyhow::{Result, bail};
 use base64::Engine;
 use sha2::{Digest, Sha256};
+
+/// Convert IPv4-mapped IPv6 addresses from a dual-stack UDP socket back to
+/// ordinary IPv4. Without this, IPv4 peers appear as `::ffff:1.2.3.4` and
+/// endpoint comparisons/STUN replies become inconsistent.
+pub fn normalize_addr(addr: SocketAddr) -> SocketAddr {
+    if let SocketAddr::V6(v6) = addr {
+        if let Some(v4) = v6.ip().to_ipv4_mapped() {
+            return SocketAddr::new(std::net::IpAddr::V4(v4), addr.port());
+        }
+    }
+    addr
+}
+
+/// Bind a UDP socket that accepts both IPv6 and IPv4-mapped IPv4 traffic.
+/// Falls back to IPv4 when the host has no IPv6 stack.
+pub fn bind_udp_dual(port: u16) -> Result<tokio::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::{Ipv6Addr, SocketAddr as StdSocketAddr, SocketAddrV6};
+
+    if let Ok(sock) = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)) {
+        if sock.set_only_v6(false).is_ok()
+            && sock
+                .bind(&StdSocketAddr::V6(SocketAddrV6::new(
+                    Ipv6Addr::UNSPECIFIED,
+                    port,
+                    0,
+                    0,
+                ))
+                .into())
+                .is_ok()
+            && sock.set_nonblocking(true).is_ok()
+        {
+            let std_sock: std::net::UdpSocket = sock.into();
+            if let Ok(s) = tokio::net::UdpSocket::from_std(std_sock) {
+                return Ok(s);
+            }
+        }
+    }
+    let std_sock = std::net::UdpSocket::bind(("0.0.0.0", port))?;
+    std_sock.set_nonblocking(true)?;
+    Ok(tokio::net::UdpSocket::from_std(std_sock)?)
+}
 
 /// 由网络名+密钥派生一个稳定的标识（用于服务端比对）。
 pub fn secret_hash(secret: &str) -> String {

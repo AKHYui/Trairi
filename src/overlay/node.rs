@@ -37,6 +37,8 @@ pub struct PeerSpec {
     pub ip: Ipv4Addr,
     pub pubkey: [u8; 32],
     pub endpoint: Option<SocketAddr>,
+    /// Additional endpoints learned from STUN/punches/IPv6 signaling.
+    pub endpoints: Vec<SocketAddr>,
     /// Whether this peer can be reached via the server's TCP relay.
     /// The server-node peer is direct-only.
     pub relay_allowed: bool,
@@ -156,10 +158,19 @@ impl NodeHandle {
             };
             {
                 let mut g = peer.lock().await;
-                g.endpoint = spec.endpoint;
+                if let Some(ep) = spec.endpoint {
+                    g.learn_candidate(ep);
+                    g.endpoint = Some(ep);
+                }
+                for ep in &spec.endpoints {
+                    g.learn_candidate(*ep);
+                }
                 g.relay_allowed = spec.relay_allowed;
             }
             if let Some(ep) = spec.endpoint {
+                eps.insert(ep, spec.ip);
+            }
+            for ep in spec.endpoints {
                 eps.insert(ep, spec.ip);
             }
             map.insert(spec.ip, peer);
@@ -212,10 +223,19 @@ pub async fn start_node(
             )));
             {
                 let mut g = peer.lock().await;
-                g.endpoint = spec.endpoint;
+                if let Some(ep) = spec.endpoint {
+                    g.learn_candidate(ep);
+                    g.endpoint = Some(ep);
+                }
+                for ep in &spec.endpoints {
+                    g.learn_candidate(*ep);
+                }
                 g.relay_allowed = spec.relay_allowed;
             }
             if let Some(ep) = spec.endpoint {
+                eps.insert(ep, spec.ip);
+            }
+            for ep in spec.endpoints {
                 eps.insert(ep, spec.ip);
             }
             map.insert(spec.ip, peer);
@@ -285,7 +305,7 @@ async fn send_out(
     socket: &UdpSocket,
     relay: Option<&RelayLink>,
     peer_pubkey: [u8; 32],
-    endpoint: Option<SocketAddr>,
+    endpoints: &[SocketAddr],
     paths: SendPaths,
     packets: &[Vec<u8>],
 ) {
@@ -293,11 +313,11 @@ async fn send_out(
         return;
     }
     // 先直连：延迟更低，也让对端优先看到直连路径。
-    if paths.direct
-        && let Some(ep) = endpoint
-    {
-        for p in packets {
-            let _ = socket.send_to(p, ep).await;
+    if paths.direct {
+        for ep in endpoints {
+            for p in packets {
+                let _ = socket.send_to(p, ep).await;
+            }
         }
     }
     if paths.relay
@@ -352,12 +372,12 @@ fn spawn_device_loop(
                                 continue;
                             };
                             let mut g = peer.lock().await;
-                            let endpoint = g.endpoint;
+                            let endpoints = g.direct_addrs();
                             let pubkey = g.pubkey;
                             let paths = g.send_paths(relay_path_available(&relay));
                             let action: WgAction = g.encapsulate(pkt);
                             drop(g);
-                            send_out(&socket, relay.as_ref(), pubkey, endpoint, paths, &action.to_net).await;
+                            send_out(&socket, relay.as_ref(), pubkey, &endpoints, paths, &action.to_net).await;
                         }
                         Err(e) => {
                             tracing::debug!("TUN 读取结束: {e}");
@@ -400,6 +420,7 @@ fn spawn_udp_receiver(
                     continue;
                 }
             };
+            let src = crate::overlay::normalize_addr(src);
             let datagram = &buf[..n];
             stats_rx.fetch_add(n as u64, Ordering::Relaxed);
 
@@ -459,7 +480,7 @@ fn spawn_udp_receiver(
                         &socket,
                         relay.as_ref(),
                         pubkey,
-                        Some(src),
+                        &[src],
                         paths,
                         &action.to_net,
                     )
@@ -495,7 +516,7 @@ fn spawn_udp_receiver(
                         &socket,
                         relay.as_ref(),
                         pubkey,
-                        Some(src),
+                        &[src],
                         paths,
                         &action.to_net,
                     )
@@ -578,19 +599,21 @@ fn spawn_timer(
             };
             for peer in all {
                 let mut g = peer.lock().await;
-                let endpoint = g.endpoint;
+                let endpoints = g.direct_addrs();
                 let pubkey = g.pubkey;
                 let paths = g.send_paths(relay_path_available(&relay));
                 let punch_due = g.punch_due();
+                let scan_targets = g.scan_targets();
                 let action = g.tick();
                 drop(g);
                 // 打洞探测：每 500ms 朝服务端观测到的地址打一发
-                if punch_due
-                    && probe_round
-                    && let Some(ep) = endpoint
-                {
-                    tracing::debug!("overlay 发送打洞探测包 -> {ep}");
-                    let _ = socket.send_to(&my_probe, ep).await;
+                if punch_due && probe_round {
+                    for ep in &endpoints {
+                        let _ = socket.send_to(&my_probe, *ep).await;
+                    }
+                    for ep in &scan_targets {
+                        let _ = socket.send_to(&my_probe, *ep).await;
+                    }
                 }
                 if action.to_net.is_empty() {
                     continue;
@@ -601,7 +624,7 @@ fn spawn_timer(
                     &socket,
                     relay.as_ref(),
                     pubkey,
-                    endpoint,
+                    &endpoints,
                     paths,
                     &action.to_net,
                 )

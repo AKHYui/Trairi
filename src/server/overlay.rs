@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, mpsc};
 
 use crate::config::OverlayConfig;
@@ -45,8 +44,7 @@ impl ServerNode {
         };
         let device = crate::overlay::tunplat::create_tun(&tun_cfg, ip, pool.prefix_len())?;
 
-        let sock = tokio::net::UdpSocket::bind(("0.0.0.0", node_port))
-            .await
+        let sock = crate::overlay::bind_udp_dual(node_port)
             .with_context(|| format!("服务端节点 UDP {node_port} 绑定失败"))?;
         let private = crate::overlay::node::generate_private();
         let pubkey = boringtun::x25519::PublicKey::from(&private).to_bytes();
@@ -83,6 +81,9 @@ pub struct Member {
     pub ip: Ipv4Addr,
     pub udp_port: u16,
     pub endpoint: Option<SocketAddr>,
+    pub ipv6: Option<std::net::Ipv6Addr>,
+    /// All endpoints observed for this member (IPv4 and IPv6).
+    pub endpoints: Vec<SocketAddr>,
     pub last_seen: Instant,
     pub hostname: String,
     pub proxy_networks: Vec<String>,
@@ -107,6 +108,8 @@ impl Network {
                 pubkey: key_to_b64(&m.pubkey),
                 ip: m.ip.to_string(),
                 endpoint: m.endpoint.map(|e| e.to_string()).unwrap_or_default(),
+                ipv6: m.ipv6.map(|v| v.to_string()).unwrap_or_default(),
+                endpoints: m.endpoints.iter().map(|e| e.to_string()).collect(),
                 is_server: m.run_id == SERVER_NODE_ID,
                 hostname: m.hostname.clone(),
                 proxy_networks: m.proxy_networks.clone(),
@@ -157,8 +160,7 @@ impl OverlayCoordinator {
             .parse()
             .with_context(|| format!("overlay.ipv4_pool 非法: {}", cfg.ipv4_pool))?;
 
-        let udp = UdpSocket::bind(("0.0.0.0", cfg.udp_port))
-            .await
+        let udp = crate::overlay::bind_udp_dual(cfg.udp_port)
             .with_context(|| format!("overlay UDP 端口 {} 绑定失败", cfg.udp_port))?;
         let udp_port = udp.local_addr()?.port();
         let socket = Arc::new(udp);
@@ -173,7 +175,7 @@ impl OverlayCoordinator {
 
         // 第二个 STUN 端口（默认 udp_port + 1），用于探测客户端 NAT 映射行为
         let stun_sock = if let Some(stun_listen_port) = cfg.effective_stun_port() {
-            match tokio::net::UdpSocket::bind(("0.0.0.0", stun_listen_port)).await {
+            match crate::overlay::bind_udp_dual(stun_listen_port) {
                 Ok(sock) => Some(Arc::new(sock)),
                 Err(e) => {
                     tracing::warn!("overlay STUN 端口 {stun_listen_port} 绑定失败，已跳过: {e}");
@@ -240,6 +242,8 @@ impl OverlayCoordinator {
                         ip: n.ip,
                         udp_port: n.node_port,
                         endpoint: None,
+                        ipv6: None,
+                        endpoints: vec![],
                         last_seen: Instant::now(),
                         hostname: "server".to_string(),
                         proxy_networks: Vec::new(),
@@ -262,6 +266,7 @@ impl OverlayCoordinator {
                         continue;
                     }
                 };
+                let src = crate::overlay::normalize_addr(src);
                 // STUN 绑定请求
                 if crate::overlay::stun::is_stun(&buf[..n]) {
                     if let Some(resp) = crate::overlay::stun::build_binding_response(&buf[..n], src)
@@ -297,6 +302,7 @@ impl OverlayCoordinator {
                             continue;
                         }
                     };
+                    let src = crate::overlay::normalize_addr(src);
                     if !crate::overlay::stun::is_stun(&buf[..n]) {
                         continue;
                     }
@@ -415,6 +421,15 @@ impl OverlayCoordinator {
         {
             let mut members = net.members.write().await;
             let old_endpoint = members.get(run_id).and_then(|m| m.endpoint);
+            let old_endpoints = members.get(run_id).map(|m| m.endpoints.clone()).unwrap_or_default();
+            let ipv6 = req.ipv6.parse::<std::net::Ipv6Addr>().ok();
+            let mut endpoints = old_endpoints;
+            if let Some(v6) = ipv6 {
+                let ep = SocketAddr::new(std::net::IpAddr::V6(v6), req.udp_port);
+                if !endpoints.contains(&ep) {
+                    endpoints.push(ep);
+                }
+            }
             members.insert(
                 run_id.to_string(),
                 Member {
@@ -423,6 +438,8 @@ impl OverlayCoordinator {
                     ip,
                     udp_port: req.udp_port,
                     endpoint: old_endpoint,
+                    ipv6,
+                    endpoints,
                     last_seen: Instant::now(),
                     hostname: req.hostname.clone(),
                     proxy_networks: req.proxy_networks.clone(),
@@ -466,10 +483,19 @@ impl OverlayCoordinator {
             {
                 let mut members = net.members.write().await;
                 for m in members.values_mut() {
-                    if &m.pubkey == pubkey && m.endpoint != Some(src) {
-                        m.endpoint = Some(src);
+                    if &m.pubkey == pubkey {
                         m.last_seen = Instant::now();
-                        changed = true;
+                        if m.endpoint != Some(src) {
+                            m.endpoint = Some(src);
+                            changed = true;
+                        }
+                        if !m.endpoints.contains(&src) {
+                            m.endpoints.push(src);
+                            if m.endpoints.len() > 8 {
+                                m.endpoints.remove(0);
+                            }
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -520,6 +546,7 @@ impl OverlayCoordinator {
                     ip,
                     pubkey: pk,
                     endpoint: crate::overlay::node::parse_endpoint(&p.endpoint).unwrap_or(None),
+                    endpoints: vec![],
                     relay_allowed: false,
                 });
                 ips.push(ip);

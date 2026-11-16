@@ -89,6 +89,8 @@ pub struct WgPeer {
     pub ip: Ipv4Addr,
     pub pubkey: [u8; 32],
     pub endpoint: Option<SocketAddr>,
+    /// All candidate endpoints for direct sends. The first is the primary.
+    pub candidates: Vec<SocketAddr>,
     /// Whether relay may be used for this peer.
     pub relay_allowed: bool,
     tunn: Tunn,
@@ -100,7 +102,8 @@ pub struct WgPeer {
     relay_rx_at: Option<Instant>,
     /// First authenticated relay packet; starts the direct grace window.
     relay_first_rx_at: Option<Instant>,
-    /// 最近一次真正发出业务数据（非保活/握手）的时间。
+    /// Bounded symmetric-NAT port scan bookkeeping.
+    scan_at: Option<Instant>,
     data_tx_at: Option<Instant>,
     created: std::time::Instant,
 }
@@ -125,6 +128,7 @@ impl WgPeer {
             ip,
             pubkey: peer_public,
             endpoint: None,
+            candidates: Vec::new(),
             relay_allowed: true,
             tunn,
             established: false,
@@ -132,6 +136,7 @@ impl WgPeer {
             direct_rx_at: None,
             relay_rx_at: None,
             relay_first_rx_at: None,
+            scan_at: None,
             data_tx_at: None,
             created: Instant::now(),
         }
@@ -244,6 +249,58 @@ impl WgPeer {
     /// 双路径发送是关键：`rx_bytes > 0` 只能证明**入向**有包，
     /// 不能证明我们的出向包能到对端（端口限制型 NAT 的单向通路）。
     /// 在判定清楚之前两条路都发，谁先带回对端的认证报文，就锁定谁。
+    pub fn direct_addrs(&self) -> Vec<SocketAddr> {
+        if !self.candidates.is_empty() {
+            return self.candidates.clone();
+        }
+        self.endpoint.into_iter().collect()
+    }
+
+    /// Add a peer-reflexive/STUN-learned candidate without discarding old
+    /// candidates. A symmetric NAT may only be reachable on one of them.
+    pub fn learn_candidate(&mut self, ep: SocketAddr) {
+        if !self.candidates.contains(&ep) {
+            self.candidates.push(ep);
+            if self.candidates.len() > 8 {
+                self.candidates.remove(0);
+            }
+        }
+        if self.endpoint.is_none() {
+            self.endpoint = Some(ep);
+        }
+    }
+
+    /// Bounded port-prediction probes for symmetric-NAT peers. This is a
+    /// single small window around already observed ports, not a full scan.
+    pub fn scan_targets(&mut self) -> Vec<SocketAddr> {
+        if !self.relay_allowed || self.owner == Some(Path::Relay) || self.established {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        if self
+            .scan_at
+            .is_some_and(|t| now.duration_since(t) < Duration::from_secs(2))
+        {
+            return Vec::new();
+        }
+        self.scan_at = Some(now);
+        let mut out = Vec::new();
+        for ep in self.direct_addrs() {
+            out.push(ep);
+            for delta in 1..=32u16 {
+                for port in [ep.port().saturating_sub(delta), ep.port().saturating_add(delta)] {
+                    if port > 0 {
+                        out.push(SocketAddr::new(ep.ip(), port));
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out.truncate(96);
+        out
+    }
+
     pub fn send_paths(&mut self, relay_available: bool) -> SendPaths {
         self.expire_direct_lock();
         let relay = relay_available && self.relay_allowed;

@@ -228,25 +228,25 @@ impl Config {
                             .unwrap_or(0);
                         let mut ports = Vec::new();
                         if udp > 0 {
-                            ports.push((udp, "overlay.udp_port"));
+                            ports.push((udp, "overlay.udp_port", "udp"));
                         }
                         if let Some(p) = stun {
-                            ports.push((p, "overlay.stun_port"));
+                            ports.push((p, "overlay.stun_port", "udp"));
                         }
                         if let Some(p) = node
                             && !self.overlay.node_ipv4.trim().is_empty()
                         {
-                            ports.push((p, "overlay.node_port"));
+                            ports.push((p, "overlay.node_port", "udp"));
                         }
                         if relay_port > 0 {
-                            ports.push((relay_port, "overlay.relay_listen"));
+                            ports.push((relay_port, "overlay.relay_listen", "tcp"));
                         }
                         for i in 0..ports.len() {
                             for j in (i + 1)..ports.len() {
-                                if ports[i].0 == ports[j].0 {
+                                if ports[i].0 == ports[j].0 && ports[i].2 == ports[j].2 {
                                     errors.push(format!(
-                                        "overlay 端口冲突: {} 和 {} 都是 {}",
-                                        ports[i].1, ports[j].1, ports[i].0
+                                        "overlay 端口冲突: {} 和 {} 都是 {}/{}",
+                                        ports[i].1, ports[j].1, ports[i].0, ports[i].2
                                     ));
                                 }
                             }
@@ -566,7 +566,8 @@ pub struct OverlayConfig {
     pub ipv4_pool: String,
     /// 数据面 UDP 监听端口（0 表示随机）
     pub udp_port: u16,
-    /// STUN UDP 端口；0 = 自动使用 udp_port + 1
+    /// STUN 端口；0 表示不单独监听（主 UDP 端口仍响应 STUN）。
+    /// 设置大于 0 才额外监听一个端口用于映射行为对比。
     pub stun_port: u16,
     /// 服务端自身节点的 UDP 端口；0 = 自动使用 udp_port + 3
     pub node_port: u16,
@@ -643,18 +644,16 @@ impl OverlayConfig {
             .unwrap_or_default()
     }
 
-    /// STUN 端口；0 表示自动从 `udp_port + 1` 推导，`udp_port == 0` 时关闭。
+    /// STUN 端口；0 表示只使用主 UDP 端口响应 STUN，不再单独暴露端口。
     pub fn effective_stun_port(&self) -> Option<u16> {
         if self.stun_port > 0 {
-            return Some(self.stun_port);
+            Some(self.stun_port)
+        } else {
+            None
         }
-        if self.udp_port == 0 {
-            return None;
-        }
-        self.udp_port.checked_add(1).filter(|p| *p > 0)
     }
 
-    /// 服务端自身节点的 UDP 端口；0 表示自动从 `udp_port + 3` 推导。
+    /// 服务端自身节点的 UDP 端口；0 表示自动与 TCP 中继共用 `udp_port + 2`。
     pub fn effective_node_port(&self) -> Option<u16> {
         if self.node_port > 0 {
             return Some(self.node_port);
@@ -662,7 +661,7 @@ impl OverlayConfig {
         if self.udp_port == 0 {
             return None;
         }
-        self.udp_port.checked_add(3).filter(|p| *p > 0)
+        self.udp_port.checked_add(2).filter(|p| *p > 0)
     }
 }
 
@@ -998,8 +997,8 @@ proxies:
         c.udp_port = 56000;
         c.relay_listen.clear();
         assert_eq!(c.effective_relay_listen(), "0.0.0.0:56002");
-        assert_eq!(c.effective_stun_port(), Some(56001));
-        assert_eq!(c.effective_node_port(), Some(56003));
+        assert_eq!(c.effective_stun_port(), None);
+        assert_eq!(c.effective_node_port(), Some(56002));
 
         c.stun_port = 16001;
         c.node_port = 16003;
