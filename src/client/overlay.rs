@@ -260,22 +260,36 @@ pub async fn setup(
         // 否则退化成同 IP 不同端口（结论较弱，只作参考）。
         let mut addr_b: Option<std::net::SocketAddr> = None;
         let mut strong = false;
-        let default_stun: &[&str] = &["stun.qq.com:3478", "stun.miwifi.com:3478"];
-        let stun_hosts: Vec<String> = if cfg.stun_servers.is_empty() {
-            default_stun.iter().map(|s| (*s).to_string()).collect()
-        } else {
-            cfg.stun_servers.clone()
-        };
-        for host in stun_hosts {
-            if let Ok(it) = tokio::net::lookup_host(host.clone()).await {
-                if let Some(a) = it.filter(|a| a.is_ipv4()).next() {
-                    addr_b = Some(a);
-                    strong = true;
-                    break;
+        // Prefer a configured external STUN (different IP gives a strong
+        // endpoint-dependent mapping result). Otherwise use the server-node
+        // UDP port as a second source port, which costs no extra exposed port.
+        if !cfg.stun_servers.is_empty() {
+            for host in cfg.stun_servers.clone() {
+                if let Ok(it) = tokio::net::lookup_host(host.clone()).await {
+                    if let Some(a) = it.filter(|a| a.is_ipv4()).next() {
+                        addr_b = Some(a);
+                        strong = true;
+                        break;
+                    }
                 }
             }
         }
-
+        if addr_b.is_none() {
+            let secondary = if assign.server_stun_port > 0 {
+                Some(assign.server_stun_port)
+            } else if assign.server_node_port > 0 {
+                Some(assign.server_node_port)
+            } else {
+                None
+            };
+            if let Some(port) = secondary {
+                let b = format!("{server_host}:{port}");
+                addr_b = tokio::net::lookup_host(&b)
+                    .await
+                    .ok()
+                    .and_then(|mut it| it.next());
+            }
+        }
         if let Some(addr_a) = addr_a {
             let probe = match addr_b {
                 Some(bb) => crate::overlay::stun::probe_mapping(&socket, addr_a, bb).await,

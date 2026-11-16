@@ -444,6 +444,16 @@ fn spawn_udp_receiver(
             let datagram = &buf[..n];
             stats_rx.fetch_add(n as u64, Ordering::Relaxed);
 
+            // The server-node UDP port also answers STUN. This gives clients a
+            // second source port for mapping classification without exposing
+            // an additional port.
+            if crate::overlay::stun::is_stun(datagram) {
+                if let Some(resp) = crate::overlay::stun::build_binding_response(datagram, src) {
+                    let _ = socket.send_to(&resp, src).await;
+                }
+                continue;
+            }
+
             // 打洞探测：学习对端真实公网地址，并在地址变化时回一发。
             if is_punch(datagram) {
                 tracing::debug!("overlay 收到打洞探测包，来自 {src}");
