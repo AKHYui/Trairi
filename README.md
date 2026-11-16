@@ -682,6 +682,8 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
 
 ## 12. Changelog
 
+- **0.4.2** (2026-11-16): relay frame batching, larger socket buffers, TCP
+  keepalive; lower relay overhead.
 - **0.4.1** (2026-11-16): TCP direct transport and source-port punching.
 - **0.4.0** (2026-11-16): IPv6 transport, multi-endpoint candidates, NAT-PMP,
   bounded port prediction, and two-port server convergence.

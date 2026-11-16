@@ -97,6 +97,14 @@ const MAX_RELAY_CONNS: usize = 4096;
 ///
 /// `allowed` 不为 None 时，只接受已通过 overlay 控制面登记的公钥，
 /// 避免任何知道 `secret_hash` 的人拿任意 pubkey 注册中继身份。
+fn tune_relay_tcp(stream: &tokio::net::TcpStream) {
+    stream.set_nodelay(true).ok();
+    let sock = socket2::SockRef::from(stream);
+    let _ = sock.set_recv_buffer_size(256 * 1024);
+    let _ = sock.set_send_buffer_size(256 * 1024);
+    let _ = sock.set_keepalive(true);
+}
+
 pub async fn spawn_relay_server(
     listener: TcpListener,
     network: String,
@@ -122,7 +130,7 @@ pub async fn spawn_relay_server(
                 drop(conn);
                 continue;
             };
-            let _ = conn.set_nodelay(true);
+            tune_relay_tcp(&conn);
             let registry = registry.clone();
             let network = network.clone();
             let secret_hash = secret_hash.clone();
@@ -208,8 +216,17 @@ async fn serve_conn(
     // 写任务
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1024);
     let writer = tokio::spawn(async move {
-        while let Some(buf) = rx.recv().await {
-            if wr.write_all(&buf).await.is_err() {
+        const BATCH: usize = 64 * 1024;
+        while let Some(first) = rx.recv().await {
+            let mut batch = first;
+            while batch.len() < BATCH {
+                match rx.try_recv() {
+                    Ok(next) => batch.extend_from_slice(&next),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                }
+            }
+            if wr.write_all(&batch).await.is_err() {
                 break;
             }
         }
@@ -332,7 +349,7 @@ impl RelayClient {
         .await
         .map_err(|_| anyhow::anyhow!("连接中继 {addr} 超时"))?
         .with_context(|| format!("连接中继 {addr} 失败"))?;
-        let _ = conn.set_nodelay(true);
+        tune_relay_tcp(&conn);
         let (mut rd, mut wr) = tokio::io::split(conn);
 
         let auth = AuthRequest {
@@ -357,8 +374,17 @@ impl RelayClient {
 
         // 写任务
         let writer = tokio::spawn(async move {
-            while let Some(buf) = rx.recv().await {
-                if wr.write_all(&buf).await.is_err() {
+            const BATCH: usize = 64 * 1024;
+            while let Some(first) = rx.recv().await {
+                let mut batch = first;
+                while batch.len() < BATCH {
+                    match rx.try_recv() {
+                        Ok(next) => batch.extend_from_slice(&next),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                    }
+                }
+                if wr.write_all(&batch).await.is_err() {
                     break;
                 }
             }
@@ -632,6 +658,43 @@ mod tests {
             .unwrap();
         assert_eq!(src, key_b);
         assert_eq!(data, b"pong-from-b");
+    }
+
+    #[tokio::test]
+    async fn relay_batches_large_burst() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hash = crate::overlay::secret_hash("secret");
+        spawn_relay_server(listener, "net".into(), hash.clone(), None)
+            .await
+            .unwrap();
+        let addr = format!("127.0.0.1:{port}");
+        let key_a = [11u8; 32];
+        let key_b = [12u8; 32];
+        let client_a = RelayClient::connect(&addr, "net", &hash, key_a)
+            .await
+            .unwrap();
+        let client_b = RelayClient::connect(&addr, "net", &hash, key_b)
+            .await
+            .unwrap();
+        let mut rx_b = client_b.take_incoming().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let payload = vec![0x5au8; 1200];
+        let start = std::time::Instant::now();
+        for _ in 0..300 {
+            client_a.send_to(key_b, &payload).await;
+        }
+        let mut got = 0;
+        while got < 300 {
+            let item = tokio::time::timeout(Duration::from_secs(5), rx_b.recv())
+                .await
+                .expect("relay burst timeout")
+                .expect("relay burst channel closed");
+            assert_eq!(item.1.len(), payload.len());
+            got += 1;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "relay burst too slow: {:?}", start.elapsed());
     }
 
     #[tokio::test]

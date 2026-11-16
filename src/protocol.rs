@@ -163,6 +163,9 @@ pub struct OverlayRegister {
     /// 本机可用的公网/全球 IPv6 地址（可空），用于双栈 P2P。
     #[serde(default)]
     pub ipv6: String,
+    /// IPv6 的公网映射端口（NAT66 时可能与本地 UDP 端口不同）。
+    #[serde(default)]
+    pub ipv6_port: u16,
     /// 期望的虚拟 IP（可空，由服务端分配）
     #[serde(default)]
     pub want_ip: String,
@@ -186,6 +189,9 @@ pub struct OverlayPeerInfo {
     /// 本节点的全球 IPv6 地址（可空）。
     #[serde(default)]
     pub ipv6: String,
+    /// IPv6 的公网映射端口（可空/0）。
+    #[serde(default)]
+    pub ipv6_port: u16,
     /// 对端可尝试的 TCP 直连 endpoint（服务端用观测到的 IP + udp_port 推导）。
     #[serde(default)]
     pub tcp_endpoint: String,

@@ -403,6 +403,7 @@ pub fn register_msg(
     public_b64: &str,
     udp_port: u16,
     ipv6: &str,
+    ipv6_port: u16,
 ) -> OverlayRegister {
     OverlayRegister {
         network: cfg.network_name.clone(),
@@ -410,6 +411,7 @@ pub fn register_msg(
         pubkey: public_b64.to_string(),
         udp_port,
         ipv6: ipv6.to_string(),
+        ipv6_port,
         // 只发 IP 部分，掩码由服务端按地址池决定
         hostname: crate::client::hostname_static(),
         proxy_networks: cfg.proxy_networks.clone(),
@@ -437,6 +439,27 @@ fn hex_ipv6(s: &str) -> Result<std::net::Ipv6Addr> {
         *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)?;
     }
     Ok(std::net::Ipv6Addr::from(octets))
+}
+
+/// Discover the public IPv6 endpoint through STUN. This is essential when
+/// the local address is ULA and the carrier/router performs NAT66.
+pub async fn public_ipv6(socket: &tokio::net::UdpSocket) -> Option<std::net::SocketAddr> {
+    for host in ["stun.cloudflare.com:3478", "stun.miwifi.com:3478"] {
+        let Ok(it) = tokio::net::lookup_host(host).await else { continue };
+        let Some(server) = it.filter(|a| a.is_ipv6()).next() else { continue };
+        let Ok(Ok(mapped)) = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            crate::overlay::stun::binding(socket, server),
+        )
+        .await
+        else {
+            continue;
+        };
+        if mapped.is_ipv6() {
+            return Some(mapped);
+        }
+    }
+    None
 }
 
 /// Best-effort global/local IPv6 address for dual-stack P2P signaling.

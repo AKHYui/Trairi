@@ -86,6 +86,7 @@ pub struct Member {
     pub udp_port: u16,
     pub endpoint: Option<SocketAddr>,
     pub ipv6: Option<std::net::Ipv6Addr>,
+    pub ipv6_port: u16,
     /// All endpoints observed for this member (IPv4 and IPv6).
     pub endpoints: Vec<SocketAddr>,
     pub last_seen: Instant,
@@ -113,6 +114,7 @@ impl Network {
                 ip: m.ip.to_string(),
                 endpoint: m.endpoint.map(|e| e.to_string()).unwrap_or_default(),
                 ipv6: m.ipv6.map(|v| v.to_string()).unwrap_or_default(),
+                ipv6_port: m.ipv6_port,
                 tcp_endpoint: m
                     .endpoint
                     .map(|e| format!("{}:{}", e.ip(), m.udp_port))
@@ -256,6 +258,7 @@ impl OverlayCoordinator {
                         udp_port: n.node_port,
                         endpoint: None,
                         ipv6: None,
+                        ipv6_port: 0,
                         endpoints: vec![],
                         last_seen: Instant::now(),
                         hostname: "server".to_string(),
@@ -471,9 +474,14 @@ impl OverlayCoordinator {
             let old_endpoint = members.get(run_id).and_then(|m| m.endpoint);
             let old_endpoints = members.get(run_id).map(|m| m.endpoints.clone()).unwrap_or_default();
             let ipv6 = req.ipv6.parse::<std::net::Ipv6Addr>().ok();
+            let ipv6_port = if req.ipv6_port > 0 {
+                req.ipv6_port
+            } else {
+                req.udp_port
+            };
             let mut endpoints = old_endpoints;
             if let Some(v6) = ipv6 {
-                let ep = SocketAddr::new(std::net::IpAddr::V6(v6), req.udp_port);
+                let ep = SocketAddr::new(std::net::IpAddr::V6(v6), ipv6_port);
                 if !endpoints.contains(&ep) {
                     endpoints.push(ep);
                 }
@@ -487,6 +495,7 @@ impl OverlayCoordinator {
                     udp_port: req.udp_port,
                     endpoint: old_endpoint,
                     ipv6,
+                    ipv6_port,
                     endpoints,
                     last_seen: Instant::now(),
                     hostname: req.hostname.clone(),

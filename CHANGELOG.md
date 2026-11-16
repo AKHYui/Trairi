@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 — 2026-11-16
+
+- Relay efficiency: batch up to 64 KiB of relay frames per TCP write, enable
+  TCP_NODELAY (already), keepalive, and 256 KiB socket buffers.
+- Added a 300×1200-byte relay burst test (local pass).
+- No protocol change; relay remains the same 56002/tcp endpoint.
+
 ## 0.4.1 — 2026-11-16
 
 - Add TCP direct transport for the overlay: clients listen on the same numeric

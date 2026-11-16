@@ -621,10 +621,27 @@ async fn start_overlay(
             .with_context(|| format!("overlay UDP bind port {} failed", cfg.overlay.udp_port))?,
     );
     let port = socket.local_addr()?.port();
-    let ipv6 = overlay::local_ipv6().await.map(|v| v.to_string()).unwrap_or_default();
-    if !ipv6.is_empty() {
-        tracing::info!("overlay 本机 IPv6: {ipv6}");
-    }
+    let local6 = overlay::local_ipv6().await;
+    let local_is_global = local6.is_some_and(|v| {
+        let first = v.segments()[0];
+        first & 0xe000 == 0x2000 && !v.is_loopback()
+    });
+    let (ipv6, ipv6_port) = if let Some(v) = local6.filter(|_| local_is_global) {
+        tracing::info!("overlay 本机全局 IPv6: [{v}]:{port}");
+        (v.to_string(), port)
+    } else {
+        let public = overlay::public_ipv6(&socket).await;
+        if let Some(ep) = public {
+            tracing::info!("overlay 公网 IPv6: {ep}");
+            (ep.ip().to_string(), ep.port())
+        } else {
+            let local = local6.map(|v| v.to_string()).unwrap_or_default();
+            if !local.is_empty() {
+                tracing::info!("overlay 本机 IPv6: {local}");
+            }
+            (local, port)
+        }
+    };
 
     let (tx_a, rx_a) = oneshot::channel();
     *assign_slot.lock().unwrap() = Some(tx_a);
@@ -634,6 +651,7 @@ async fn start_overlay(
         &pubkey_b64,
         port,
         &ipv6,
+        ipv6_port,
     )))
     .await
     .map_err(|_| anyhow::anyhow!("控制连接已断开"))?;
