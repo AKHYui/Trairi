@@ -12,14 +12,23 @@ const PORT: u16 = 5351;
 
 /// Ask the default gateway for a UDP mapping. Returns the external port.
 pub async fn try_map(local_port: u16) -> Result<u16> {
+    try_map_inner(local_port, 0).await
+}
+
+/// Map TCP on the same numeric port (NAT-PMP opcode 1).
+pub async fn try_map_tcp(local_port: u16) -> Result<u16> {
+    try_map_inner(local_port, 1).await
+}
+
+async fn try_map_inner(local_port: u16, opcode: u8) -> Result<u16> {
     let gateway = default_gateway()?;
     let sock = UdpSocket::bind("0.0.0.0:0").await?;
     sock.connect((gateway, PORT)).await?;
 
-    // version 0, opcode 0 (UDP), reserved, internal port, suggested external,
-    // lifetime 3600 seconds.
+    // version 0, opcode (UDP/TCP), reserved, internal port, suggested
+    // external, lifetime 3600 seconds.
     let mut req = [0u8; 12];
-    req[1] = 0;
+    req[1] = opcode;
     req[4..6].copy_from_slice(&local_port.to_be_bytes());
     req[6..8].copy_from_slice(&local_port.to_be_bytes());
     req[8..12].copy_from_slice(&3600u32.to_be_bytes());

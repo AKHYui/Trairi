@@ -40,6 +40,7 @@ pub async fn try_map(socket: &UdpSocket) -> Result<u16> {
             external,
             local_port,
             local_ip,
+            "UDP",
         )
         .await
         {
@@ -197,6 +198,7 @@ async fn add_mapping(
     external_port: u16,
     internal_port: u16,
     local_ip: IpAddr,
+    protocol: &str,
 ) -> Result<()> {
     let (host, port, path) = parse_http_url(control_url)?;
     let body = format!(
@@ -206,7 +208,7 @@ async fn add_mapping(
 <u:AddPortMapping xmlns:u="{service}">
 <NewRemoteHost></NewRemoteHost>
 <NewExternalPort>{external_port}</NewExternalPort>
-<NewProtocol>UDP</NewProtocol>
+<NewProtocol>{protocol}</NewProtocol>
 <NewInternalPort>{internal_port}</NewInternalPort>
 <NewInternalClient>{local_ip}</NewInternalClient>
 <NewEnabled>1</NewEnabled>
