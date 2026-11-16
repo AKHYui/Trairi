@@ -19,6 +19,7 @@ pub mod node;
 pub mod relay;
 pub mod stun;
 pub mod tunplat;
+pub mod upnp;
 pub mod wg;
 
 use std::net::Ipv4Addr;

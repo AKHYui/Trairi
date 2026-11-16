@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.10 — 2026-11-16
+
+- Client overlay startup now performs best-effort UPnP IGD port mapping for
+  its UDP socket. On routers with UPnP enabled this creates a stable external
+  UDP mapping automatically; no router configuration is required.
+- Mapping failure is non-fatal and leaves relay fallback unchanged.
+
 ## 0.3.9 — 2026-11-16
 
 - The default client `run_id` is now stable (hostname) instead of

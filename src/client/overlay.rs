@@ -160,6 +160,16 @@ pub async fn setup(
 
     let device = tunplat::create_tun(&tun_cfg, ip, prefix)?;
 
+    // Best-effort automatic router mapping. This is what makes symmetric NAT
+    // usable without asking the user to open a port by hand. Failure is not
+    // fatal: relay fallback remains.
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Err(e) = crate::overlay::upnp::try_map(socket.as_ref()).await {
+            tracing::info!("UPnP 自动端口映射不可用: {e:#}");
+        }
+    }
+
     // 探测自己的公网地址
     if assign.server_udp_port > 0 {
         let target = format!("{server_host}:{}", assign.server_udp_port);
