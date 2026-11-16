@@ -337,6 +337,23 @@ impl OverlayCoordinator {
         self.senders.write().await.insert(run_id.to_string(), tx);
     }
 
+    /// Remove members whose control connection is gone. A stale member still
+    /// owns its virtual IP, so a reconnecting client would be assigned a new IP
+    /// and keep seeing its old endpoint forever.
+    async fn prune_stale_members(&self, net: &Network) {
+        let active: HashSet<String> = self.senders.read().await.keys().cloned().collect();
+        let mut members = net.members.write().await;
+        let stale: Vec<String> = members
+            .iter()
+            .filter(|(id, _)| id.as_str() != SERVER_NODE_ID && !active.contains(*id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            members.remove(&id);
+            tracing::info!("overlay 清理陈旧节点 {id}");
+        }
+    }
+
     pub async fn remove_sender(&self, run_id: &str) {
         self.senders.write().await.remove(run_id);
         let nets = self.networks.read().await;
@@ -370,6 +387,7 @@ impl OverlayCoordinator {
             return Err("网络密钥不正确".to_string());
         }
         let pubkey = key_from_b64(&req.pubkey).map_err(|e| format!("公钥非法: {e}"))?;
+        self.prune_stale_members(&net).await;
 
         // 兼容 "10.144.144.2" 和 "10.144.144.2/32" 两种写法
         let want = if req.want_ip.trim().is_empty() {
@@ -471,6 +489,7 @@ impl OverlayCoordinator {
             nets.get(network).cloned()
         };
         let Some(net) = net else { return };
+        self.prune_stale_members(&net).await;
 
         let members: Vec<String> = { net.members.read().await.keys().cloned().collect() };
         let senders = self.senders.read().await;

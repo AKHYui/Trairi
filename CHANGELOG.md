@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.8 — 2026-11-16
+
+- Overlay coordinator now prunes members whose control sender is gone before
+  allocating an IP or broadcasting the peer table.
+- This prevents a stale client from holding a virtual IP and leaving a dead
+  public endpoint in every other client's peer table, which caused endless
+  `HANDSHAKE(REKEY_TIMEOUT)` attempts.
+
 ## 0.3.7 — 2026-11-13
 
 - Prefer direct for ordinary peers with a 5-second relay grace window; a

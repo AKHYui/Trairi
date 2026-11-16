@@ -682,6 +682,7 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
 
 ## 12. Changelog
 
+- **0.3.8** (2026-11-16): prune overlay members whose control sender is gone.
 - **0.3.7** (2026-11-13): direct-first for ordinary peers, direct-only server
   node, 5s relay grace.
 - **0.3.6** (2026-11-13): vendor-fix smux idle-stream self-wake; fixes 100% CPU.
