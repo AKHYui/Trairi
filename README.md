@@ -682,6 +682,8 @@ trairi overlay cleanup --interface trairi0    # clean up a stale TUN device
 
 ## 12. Changelog
 
+- **0.4.3** (2026-11-16): server-node endpoint fix and strict relay-only mode
+  for ordinary peers.
 - **0.4.2** (2026-11-16): relay frame batching, larger socket buffers, TCP
   keepalive; lower relay overhead.
 - **0.4.1** (2026-11-16): TCP direct transport and source-port punching.

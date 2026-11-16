@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3 — 2026-11-16
+
+- Fixed server-node `.1` using the coordinator-observed client endpoint
+  (`56000` mapping) for its own `56002` socket. The server node now learns its
+  peer endpoint from incoming punches on its own socket.
+- `overlay.direct: false` now clears ordinary peer UDP candidates and TCP
+  direct endpoints; ordinary peers use relay only. The server node remains
+  direct because it has no relay registration.
+- Added relay-only config templates.
+
 ## 0.4.2 — 2026-11-16
 
 - Relay efficiency: batch up to 64 KiB of relay frames per TCP write, enable

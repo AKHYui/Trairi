@@ -629,6 +629,7 @@ trairi overlay cleanup --interface trairi0   # 进程被强杀后清理残留网
 
 ## 12. 版本记录
 
+- **0.4.3**（2026-11-16）：修复服务端节点 `.1` 使用错误 endpoint；普通 peer 的 `direct: false` 现在只走 relay。
 - **0.4.2**（2026-11-16）：中继帧批量写、增大 socket 缓冲、TCP keepalive，降低中继开销。
 - **0.4.1**（2026-11-16）：增加 TCP 直连传输和源端口同时打开尝试。
 - **0.4.0**（2026-11-16）：IPv6 传输、多 endpoint 候选、NAT-PMP、有限端口预测，

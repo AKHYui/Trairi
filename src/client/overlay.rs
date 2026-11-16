@@ -41,9 +41,7 @@ impl OverlayClient {
                 continue;
             };
             // direct = false 时忽略 endpoint，强制走中继
-            let endpoint = if !self.direct {
-                None
-            } else if p.is_server {
+            let endpoint = if p.is_server {
                 // 服务端节点：客户端用自己连服务端用的地址去凑（服务端不知道自己的公网 IP）
                 if self.server_node_port > 0 {
                     format!("{}:{}", self.server_addr, self.server_node_port)
@@ -52,6 +50,8 @@ impl OverlayClient {
                 } else {
                     None
                 }
+            } else if !self.direct {
+                None
             } else {
                 match node::parse_endpoint(&p.endpoint) {
                     Ok(e) => e,
@@ -65,8 +65,12 @@ impl OverlayClient {
                 ip,
                 pubkey: pk,
                 endpoint,
-                endpoints: p.endpoints.iter().filter_map(|s| node::parse_endpoint(s).ok().flatten()).collect(),
-                tcp_endpoint: p.tcp_endpoint.parse().ok(),
+                endpoints: if self.direct {
+                    p.endpoints.iter().filter_map(|s| node::parse_endpoint(s).ok().flatten()).collect()
+                } else {
+                    Vec::new()
+                },
+                tcp_endpoint: if self.direct { p.tcp_endpoint.parse().ok() } else { None },
                 relay_allowed: !p.is_server,
             });
         }
@@ -207,9 +211,7 @@ pub async fn setup(
     let mut ips = Vec::new();
     for p in &assign.peers {
         if let (Ok(ip), Ok(pk)) = (p.ip.parse::<Ipv4Addr>(), key_from_b64(&p.pubkey)) {
-            let endpoint = if !cfg.direct {
-                None
-            } else if p.is_server {
+            let endpoint = if p.is_server {
                 if assign.server_node_port > 0 {
                     format!("{server_host}:{}", assign.server_node_port)
                         .parse()
@@ -217,6 +219,8 @@ pub async fn setup(
                 } else {
                     None
                 }
+            } else if !cfg.direct {
+                None
             } else {
                 node::parse_endpoint(&p.endpoint).unwrap_or(None)
             };
@@ -224,8 +228,12 @@ pub async fn setup(
                 ip,
                 pubkey: pk,
                 endpoint,
-                endpoints: p.endpoints.iter().filter_map(|s| node::parse_endpoint(s).ok().flatten()).collect(),
-                tcp_endpoint: p.tcp_endpoint.parse().ok(),
+                endpoints: if cfg.direct {
+                    p.endpoints.iter().filter_map(|s| node::parse_endpoint(s).ok().flatten()).collect()
+                } else {
+                    Vec::new()
+                },
+                tcp_endpoint: if cfg.direct { p.tcp_endpoint.parse().ok() } else { None },
                 relay_allowed: !p.is_server,
             });
             ips.push(ip);
