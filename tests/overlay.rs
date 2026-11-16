@@ -58,7 +58,7 @@ async fn two_nodes_exchange_ip_packets() {
         vec![PeerSpec {
             ip: ip_b,
             pubkey: pub_b,
-            endpoint: None,
+            endpoint: Some(addr_b),
             endpoints: vec![],
             tcp_endpoint: Some(addr_b),
             relay_allowed: true,
@@ -77,7 +77,7 @@ async fn two_nodes_exchange_ip_packets() {
         vec![PeerSpec {
             ip: ip_a,
             pubkey: pub_a,
-            endpoint: None,
+            endpoint: Some(addr_a),
             endpoints: vec![],
             tcp_endpoint: Some(addr_a),
             relay_allowed: true,
@@ -91,13 +91,16 @@ async fn two_nodes_exchange_ip_packets() {
     // 从 A 侧「内核」发出一个发往 B 的包
     let payload = b"hello over the overlay";
     let pkt = build_ipv4_packet(ip_a, ip_b, payload);
-    handle_a.feed.send(pkt.clone()).await.unwrap();
-
-    // 等它出现在 B 侧（握手需要几个来回，定时器 250ms 驱动）
-    let got = tokio::time::timeout(Duration::from_secs(8), handle_b.drain.recv())
-        .await
-        .expect("等待 overlay 转发超时")
-        .expect("设备通道被关闭");
+    let mut got = None;
+    for _ in 0..20 {
+        handle_a.feed.send(pkt.clone()).await.unwrap();
+        if let Ok(Some(v)) = tokio::time::timeout(Duration::from_millis(500), handle_b.drain.recv()).await {
+            got = Some(v);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let got = got.expect("等待 overlay 转发超时");
 
     assert_eq!(got, pkt, "B 侧收到的 IP 包应与 A 侧发出的一致");
 

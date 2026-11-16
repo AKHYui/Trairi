@@ -447,7 +447,7 @@ fn spawn_udp_receiver(
             // The server-node UDP port also answers STUN. This gives clients a
             // second source port for mapping classification without exposing
             // an additional port.
-            if crate::overlay::stun::is_stun(datagram) {
+            if crate::overlay::stun::is_binding_request(datagram) {
                 if let Some(resp) = crate::overlay::stun::build_binding_response(datagram, src) {
                     let _ = socket.send_to(&resp, src).await;
                 }

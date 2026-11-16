@@ -61,6 +61,11 @@ pub fn is_stun(buf: &[u8]) -> bool {
         && u16::from_be_bytes([buf[2], buf[3]]) as usize + 20 <= buf.len()
 }
 
+/// Is this a STUN Binding Request (0x0001), not a response?
+pub fn is_binding_request(buf: &[u8]) -> bool {
+    is_stun(buf) && u16::from_be_bytes([buf[0], buf[1]]) == BINDING_REQUEST
+}
+
 /// 解析 Binding Success，取出映射地址。
 pub fn parse_binding_response(buf: &[u8]) -> Option<SocketAddr> {
     if buf.len() < 20 {

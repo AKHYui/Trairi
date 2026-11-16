@@ -277,7 +277,7 @@ impl OverlayCoordinator {
                 };
                 let src = crate::overlay::normalize_addr(src);
                 // STUN 绑定请求
-                if crate::overlay::stun::is_stun(&buf[..n]) {
+                if crate::overlay::stun::is_binding_request(&buf[..n]) {
                     if let Some(resp) = crate::overlay::stun::build_binding_response(&buf[..n], src)
                     {
                         let _ = sock.send_to(&resp, src).await;
@@ -312,7 +312,7 @@ impl OverlayCoordinator {
                         }
                     };
                     let src = crate::overlay::normalize_addr(src);
-                    if !crate::overlay::stun::is_stun(&buf[..n]) {
+                    if !crate::overlay::stun::is_binding_request(&buf[..n]) {
                         continue;
                     }
                     if let Some(resp) = crate::overlay::stun::build_binding_response(&buf[..n], src)

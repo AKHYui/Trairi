@@ -263,14 +263,20 @@ pub async fn setup(
         // Prefer a configured external STUN (different IP gives a strong
         // endpoint-dependent mapping result). Otherwise use the server-node
         // UDP port as a second source port, which costs no extra exposed port.
-        if !cfg.stun_servers.is_empty() {
-            for host in cfg.stun_servers.clone() {
-                if let Ok(it) = tokio::net::lookup_host(host.clone()).await {
-                    if let Some(a) = it.filter(|a| a.is_ipv4()).next() {
-                        addr_b = Some(a);
-                        strong = true;
-                        break;
-                    }
+        let stun_hosts: Vec<String> = if cfg.stun_servers.is_empty() {
+            vec![
+                "stun.miwifi.com:3478".to_string(),
+                "stun.cloudflare.com:3478".to_string(),
+            ]
+        } else {
+            cfg.stun_servers.clone()
+        };
+        for host in stun_hosts {
+            if let Ok(it) = tokio::net::lookup_host(host.clone()).await {
+                if let Some(a) = it.filter(|a| a.is_ipv4()).next() {
+                    addr_b = Some(a);
+                    strong = true;
+                    break;
                 }
             }
         }
