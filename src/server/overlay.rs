@@ -23,6 +23,7 @@ pub struct ServerNode {
     pub pubkey: [u8; 32],
     pub node_port: u16,
     pub ifname: String,
+    pub socket: std::sync::Arc<tokio::net::UdpSocket>,
 }
 
 impl ServerNode {
@@ -44,13 +45,15 @@ impl ServerNode {
         };
         let device = crate::overlay::tunplat::create_tun(&tun_cfg, ip, pool.prefix_len())?;
 
-        let sock = crate::overlay::bind_udp_dual(node_port)
-            .with_context(|| format!("服务端节点 UDP {node_port} 绑定失败"))?;
+        let sock = std::sync::Arc::new(
+            crate::overlay::bind_udp_dual(node_port)
+                .with_context(|| format!("服务端节点 UDP {node_port} 绑定失败"))?,
+        );
         let private = crate::overlay::node::generate_private();
         let pubkey = boringtun::x25519::PublicKey::from(&private).to_bytes();
         let handle = crate::overlay::node::start_node(
             device,
-            std::sync::Arc::new(sock),
+            sock.clone(),
             private.clone(),
             ip,
             cfg.mtu,
@@ -67,6 +70,7 @@ impl ServerNode {
             pubkey,
             node_port,
             ifname: tun_cfg.interface.clone(),
+            socket: sock,
         })
     }
 }
@@ -262,6 +266,41 @@ impl OverlayCoordinator {
         }
 
         // UDP 监听：学习客户端公网 endpoint + 应答 STUN 绑定请求
+        // Periodically send a STUN Binding Request from the server-node port
+        // (56002) to clients. Clients normally did not send to this port, so a
+        // response proves that the NAT filtering is not port-restricted.
+        if let Some(n) = node.clone() {
+            let coord2 = coord.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let endpoints: Vec<SocketAddr> = {
+                        let nets = coord2.networks.read().await;
+                        let mut out = Vec::new();
+                        for net in nets.values() {
+                            let members = net.members.read().await;
+                            for (id, m) in members.iter() {
+                                if id != SERVER_NODE_ID {
+                                    if let Some(ep) = m.endpoint {
+                                        out.push(ep);
+                                    }
+                                }
+                            }
+                        }
+                        out.sort_unstable();
+                        out.dedup();
+                        out
+                    };
+                    for ep in endpoints {
+                        let req = crate::overlay::stun::build_binding_request(
+                            &crate::overlay::stun::random_txid(),
+                        );
+                        let _ = n.socket.send_to(&req, ep).await;
+                    }
+                }
+            });
+        }
+
         let me = coord.clone();
         let sock = socket.clone();
         tokio::spawn(async move {

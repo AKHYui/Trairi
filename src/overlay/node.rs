@@ -453,6 +453,10 @@ fn spawn_udp_receiver(
                 }
                 continue;
             }
+            if crate::overlay::stun::is_stun(datagram) {
+                tracing::info!("overlay STUN 过滤探测响应: {src}");
+                continue;
+            }
 
             // 打洞探测：学习对端真实公网地址，并在地址变化时回一发。
             if is_punch(datagram) {
