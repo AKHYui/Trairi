@@ -58,9 +58,9 @@ async fn two_nodes_exchange_ip_packets() {
         vec![PeerSpec {
             ip: ip_b,
             pubkey: pub_b,
-            endpoint: Some(addr_b),
+            endpoint: None,
             endpoints: vec![],
-            tcp_endpoint: None,
+            tcp_endpoint: Some(addr_b),
             relay_allowed: true,
         }],
         None,
@@ -77,9 +77,9 @@ async fn two_nodes_exchange_ip_packets() {
         vec![PeerSpec {
             ip: ip_a,
             pubkey: pub_a,
-            endpoint: Some(addr_a),
+            endpoint: None,
             endpoints: vec![],
-            tcp_endpoint: None,
+            tcp_endpoint: Some(addr_a),
             relay_allowed: true,
         }],
         None,
@@ -87,6 +87,7 @@ async fn two_nodes_exchange_ip_packets() {
     .await
     .unwrap();
 
+    tokio::time::sleep(Duration::from_millis(2500)).await;
     // 从 A 侧「内核」发出一个发往 B 的包
     let payload = b"hello over the overlay";
     let pkt = build_ipv4_packet(ip_a, ip_b, payload);
