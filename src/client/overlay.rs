@@ -66,6 +66,7 @@ impl OverlayClient {
                 pubkey: pk,
                 endpoint,
                 endpoints: p.endpoints.iter().filter_map(|s| node::parse_endpoint(s).ok().flatten()).collect(),
+                tcp_endpoint: p.tcp_endpoint.parse().ok(),
                 relay_allowed: !p.is_server,
             });
         }
@@ -224,6 +225,7 @@ pub async fn setup(
                 pubkey: pk,
                 endpoint,
                 endpoints: p.endpoints.iter().filter_map(|s| node::parse_endpoint(s).ok().flatten()).collect(),
+                tcp_endpoint: p.tcp_endpoint.parse().ok(),
                 relay_allowed: !p.is_server,
             });
             ips.push(ip);

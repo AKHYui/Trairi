@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 — 2026-11-16
+
+- Add TCP direct transport for the overlay: clients listen on the same numeric
+  port as UDP, exchange a pubkey handshake, and carry length-framed WireGuard
+  datagrams over TCP.
+- Add simultaneous-open-style source-port binding for TCP connections, with an
+  ephemeral-port fallback.
+- Server advertises the peer TCP endpoint derived from the observed IP and
+  overlay UDP port; no extra server port is opened.
+
 ## 0.4.0 — 2026-11-16
 
 - Dual-stack UDP overlay transport: clients bind one dual-stack UDP socket and

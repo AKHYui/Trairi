@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use boringtun::x25519::{PublicKey, StaticSecret};
-use tokio::net::UdpSocket;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::overlay::device::IpDevice;
@@ -39,6 +40,8 @@ pub struct PeerSpec {
     pub endpoint: Option<SocketAddr>,
     /// Additional endpoints learned from STUN/punches/IPv6 signaling.
     pub endpoints: Vec<SocketAddr>,
+    /// Optional TCP direct endpoint (same numeric port as UDP by default).
+    pub tcp_endpoint: Option<SocketAddr>,
     /// Whether this peer can be reached via the server's TCP relay.
     /// The server-node peer is direct-only.
     pub relay_allowed: bool,
@@ -166,6 +169,7 @@ impl NodeHandle {
                     g.learn_candidate(*ep);
                 }
                 g.relay_allowed = spec.relay_allowed;
+                g.tcp_endpoint = spec.tcp_endpoint;
             }
             if let Some(ep) = spec.endpoint {
                 eps.insert(ep, spec.ip);
@@ -231,6 +235,7 @@ pub async fn start_node(
                     g.learn_candidate(*ep);
                 }
                 g.relay_allowed = spec.relay_allowed;
+                g.tcp_endpoint = spec.tcp_endpoint;
             }
             if let Some(ep) = spec.endpoint {
                 eps.insert(ep, spec.ip);
@@ -257,6 +262,14 @@ pub async fn start_node(
     };
 
     let (to_dev_tx, to_dev_rx) = mpsc::channel::<Vec<u8>>(512);
+    if let Ok(local) = socket.local_addr() {
+        spawn_tcp_manager(
+            peers.clone(),
+            to_dev_tx.clone(),
+            public_key,
+            local.port(),
+        );
+    }
 
     spawn_udp_receiver(
         socket.clone(),
@@ -306,11 +319,17 @@ async fn send_out(
     relay: Option<&RelayLink>,
     peer_pubkey: [u8; 32],
     endpoints: &[SocketAddr],
+    tcp: Option<&tokio::sync::mpsc::Sender<Vec<u8>>>,
     paths: SendPaths,
     packets: &[Vec<u8>],
 ) {
-    if packets.is_empty() || paths.is_empty() {
+    if packets.is_empty() || (paths.is_empty() && tcp.is_none()) {
         return;
+    }
+    if let Some(tx) = tcp {
+        for p in packets {
+            let _ = tx.send(p.clone()).await;
+        }
     }
     // 先直连：延迟更低，也让对端优先看到直连路径。
     if paths.direct {
@@ -373,11 +392,12 @@ fn spawn_device_loop(
                             };
                             let mut g = peer.lock().await;
                             let endpoints = g.direct_addrs();
+                            let tcp = g.tcp_tx.clone();
                             let pubkey = g.pubkey;
                             let paths = g.send_paths(relay_path_available(&relay));
                             let action: WgAction = g.encapsulate(pkt);
                             drop(g);
-                            send_out(&socket, relay.as_ref(), pubkey, &endpoints, paths, &action.to_net).await;
+                            send_out(&socket, relay.as_ref(), pubkey, &endpoints, tcp.as_ref(), paths, &action.to_net).await;
                         }
                         Err(e) => {
                             tracing::debug!("TUN 读取结束: {e}");
@@ -467,20 +487,21 @@ fn spawn_udp_receiver(
             if let Some(ip) = known_ip {
                 let peer = { peers.read().await.get(&ip).cloned() };
                 if let Some(peer) = peer {
-                    let (action, paths, pubkey) = {
+                    let (action, paths, pubkey, tcp) = {
                         let mut g = peer.lock().await;
                         let action = g.decapsulate(Some(src.ip()), datagram);
                         if action.authenticated {
                             g.note_inbound(Path::Direct, wg_message_type(datagram));
                         }
                         let paths = g.send_paths(relay_path_available(&relay));
-                        (action, paths, g.pubkey)
+                        (action, paths, g.pubkey, g.tcp_tx.clone())
                     };
                     send_out(
                         &socket,
                         relay.as_ref(),
                         pubkey,
                         &[src],
+                        tcp.as_ref(),
                         paths,
                         &action.to_net,
                     )
@@ -505,18 +526,19 @@ fn spawn_udp_receiver(
                         g.note_inbound(Path::Direct, wg_message_type(datagram));
                         g.endpoint = Some(src);
                         let paths = g.send_paths(relay_path_available(&relay));
-                        Some((act, paths, g.pubkey))
+                        Some((act, paths, g.pubkey, g.tcp_tx.clone()))
                     } else {
                         None
                     }
                 };
-                if let Some((action, paths, pubkey)) = found {
+                if let Some((action, paths, pubkey, tcp)) = found {
                     endpoints.write().await.insert(src, ip);
                     send_out(
                         &socket,
                         relay.as_ref(),
                         pubkey,
                         &[src],
+                        tcp.as_ref(),
                         paths,
                         &action.to_net,
                     )
@@ -600,6 +622,7 @@ fn spawn_timer(
             for peer in all {
                 let mut g = peer.lock().await;
                 let endpoints = g.direct_addrs();
+                let tcp = g.tcp_tx.clone();
                 let pubkey = g.pubkey;
                 let paths = g.send_paths(relay_path_available(&relay));
                 let punch_due = g.punch_due();
@@ -625,6 +648,7 @@ fn spawn_timer(
                     relay.as_ref(),
                     pubkey,
                     &endpoints,
+                    tcp.as_ref(),
                     paths,
                     &action.to_net,
                 )
@@ -657,4 +681,219 @@ pub fn as_v4(ip: IpAddr) -> Option<Ipv4Addr> {
         IpAddr::V4(v) => Some(v),
         IpAddr::V6(_) => None,
     }
+}
+
+const TCP_MAGIC: &[u8; 8] = b"TRIRTCP1";
+
+fn spawn_tcp_manager(
+    peers: PeerMap,
+    to_dev: mpsc::Sender<Vec<u8>>,
+    my_pubkey: [u8; 32],
+    listen_port: u16,
+) {
+    tokio::spawn(async move {
+        let listener = match TcpListener::bind(("0.0.0.0", listen_port)).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::debug!("TCP 直连监听端口 {listen_port} 不可用: {e}");
+                return;
+            }
+        };
+        tracing::info!("overlay TCP 直连监听 :{listen_port}");
+        let p = peers.clone();
+        let d = to_dev.clone();
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, addr)) => {
+                        let p = p.clone();
+                        let d = d.clone();
+                        tokio::spawn(async move {
+                            tracing::debug!("overlay TCP 入站连接 {addr}");
+                            if let Err(e) = handle_tcp_stream(stream, p, d, my_pubkey).await {
+                                tracing::debug!("overlay TCP 入站结束 {addr}: {e:#}");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        tracing::debug!("overlay TCP accept: {e}");
+                    }
+                }
+            }
+        });
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let candidates: Vec<(Ipv4Addr, SocketAddr)> = {
+                let guard = peers.read().await;
+                let mut out = Vec::new();
+                for (ip, p) in guard.iter() {
+                    let g = p.lock().await;
+                    if g.tcp_tx.is_none() {
+                        if let Some(ep) = g.tcp_endpoint {
+                            out.push((*ip, ep));
+                        }
+                    }
+                }
+                out
+            };
+            for (_ip, ep) in candidates {
+                let p = peers.clone();
+                let d = to_dev.clone();
+                tokio::spawn(async move {
+                    match tokio::time::timeout(Duration::from_secs(3), connect_tcp_direct(ep, listen_port)).await {
+                        Ok(Ok(stream)) => {
+                            tracing::debug!("overlay TCP 出站连接 {ep}");
+                            if let Err(e) = handle_tcp_stream(stream, p, d, my_pubkey).await {
+                                tracing::debug!("overlay TCP 出站结束 {ep}: {e:#}");
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+            }
+        }
+    });
+}
+
+async fn handle_tcp_stream(
+    stream: TcpStream,
+    peers: PeerMap,
+    to_dev: mpsc::Sender<Vec<u8>>,
+    my_pubkey: [u8; 32],
+) -> Result<()> {
+    stream.set_nodelay(true).ok();
+    let (mut r, mut w) = stream.into_split();
+
+    let mut hello = Vec::with_capacity(40);
+    hello.extend_from_slice(TCP_MAGIC);
+    hello.extend_from_slice(&my_pubkey);
+    w.write_all(&hello).await?;
+    w.flush().await?;
+
+    let mut head = [0u8; 40];
+    read_exact_timeout(&mut r, &mut head, 3).await?;
+    if &head[..8] != TCP_MAGIC {
+        bail!("TCP 握手魔数错误");
+    }
+    let mut peer_key = [0u8; 32];
+    peer_key.copy_from_slice(&head[8..]);
+
+    let (peer_ip, peer) = {
+        let guard = peers.read().await;
+        let mut found = None;
+        for (ip, p) in guard.iter() {
+            let g = p.lock().await;
+            if g.pubkey == peer_key {
+                found = Some((*ip, p.clone()));
+                break;
+            }
+        }
+        found.ok_or_else(|| anyhow::anyhow!("TCP 对端公钥不在本节点表中"))?
+    };
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
+    {
+        let mut g = peer.lock().await;
+        if g.tcp_tx.is_some() {
+            bail!("TCP 对端已有直连链路");
+        }
+        g.tcp_tx = Some(tx.clone());
+        tracing::info!("overlay TCP 直连已建立: {peer_ip}");
+    }
+
+    let writer = tokio::spawn(async move {
+        let mut rx = rx;
+        while let Some(p) = rx.recv().await {
+            if p.len() > 65535 {
+                continue;
+            }
+            if w.write_all(&(p.len() as u32).to_be_bytes()).await.is_err() {
+                break;
+            }
+            if w.write_all(&p).await.is_err() {
+                break;
+            }
+            let _ = w.flush().await;
+        }
+    });
+
+    let peers_for_read = peers.clone();
+    let to_dev_for_read = to_dev.clone();
+    let tx_for_read = tx.clone();
+    let read_task = tokio::spawn(async move {
+        loop {
+            let mut len = [0u8; 4];
+            if read_exact_timeout(&mut r, &mut len, 30).await.is_err() {
+                break;
+            }
+            let n = u32::from_be_bytes(len) as usize;
+            if n == 0 || n > 65535 {
+                break;
+            }
+            let mut data = vec![0u8; n];
+            if read_exact_timeout(&mut r, &mut data, 30).await.is_err() {
+                break;
+            }
+            let target = {
+                let guard = peers_for_read.read().await;
+                guard.get(&peer_ip).cloned()
+            };
+            let Some(target) = target else { break };
+            let (action, paths) = {
+                let mut g = target.lock().await;
+                let action = g.decapsulate(Some(std::net::IpAddr::V4(peer_ip)), &data);
+                if action.authenticated {
+                    g.note_inbound(Path::Direct, wg_message_type(&data));
+                    g.established = true;
+                }
+                let paths = g.send_paths(true);
+                (action, paths)
+            };
+            for p in action.to_tun {
+                let _ = to_dev_for_read.send(p).await;
+            }
+            for p in action.to_net {
+                let _ = tx_for_read.send(p).await;
+            }
+            let _ = paths;
+        }
+        tracing::debug!("overlay TCP 读循环退出: {peer_ip}");
+    });
+
+    tokio::time::timeout(Duration::from_secs(3600), writer).await.ok();
+    read_task.abort();
+    let mut g = peer.lock().await;
+    g.tcp_tx = None;
+    tracing::info!("overlay TCP 直连已断开: {peer_ip}");
+    Ok(())
+}
+
+async fn connect_tcp_direct(ep: SocketAddr, local_port: u16) -> Result<TcpStream> {
+    // TCP simultaneous-open attempt: use the listener's numeric source port
+    // so both NATs can create a predictable mapping. Fall back to an
+    // ephemeral source when the platform refuses to reuse the port.
+    if let Ok(sock) = TcpSocket::new_v4() {
+        if sock.set_reuseaddr(true).is_ok()
+            && sock.bind(SocketAddr::from(([0, 0, 0, 0], local_port))).is_ok()
+        {
+            if let Ok(stream) = sock.connect(ep).await {
+                return Ok(stream);
+            }
+        }
+    }
+    let _ = local_port;
+    TcpStream::connect(ep).await.map_err(Into::into)
+}
+
+async fn read_exact_timeout<R: AsyncReadExt + Unpin>(
+    r: &mut R,
+    buf: &mut [u8],
+    secs: u64,
+) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(secs), r.read_exact(buf))
+        .await
+        .map_err(|_| anyhow::anyhow!("TCP 读取超时"))??;
+    Ok(())
 }

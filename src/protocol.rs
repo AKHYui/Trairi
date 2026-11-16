@@ -186,6 +186,9 @@ pub struct OverlayPeerInfo {
     /// 本节点的全球 IPv6 地址（可空）。
     #[serde(default)]
     pub ipv6: String,
+    /// 对端可尝试的 TCP 直连 endpoint（服务端用观测到的 IP + udp_port 推导）。
+    #[serde(default)]
+    pub tcp_endpoint: String,
     /// All observed/learned endpoints for this peer, including IPv6.
     #[serde(default)]
     pub endpoints: Vec<String>,

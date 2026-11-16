@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
+use tokio::sync::mpsc;
 
 /// 一条可用的出站路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +94,10 @@ pub struct WgPeer {
     pub candidates: Vec<SocketAddr>,
     /// Whether relay may be used for this peer.
     pub relay_allowed: bool,
+    /// Optional TCP direct endpoint.
+    pub tcp_endpoint: Option<SocketAddr>,
+    /// Active TCP direct link, if established.
+    pub tcp_tx: Option<mpsc::Sender<Vec<u8>>>,
     tunn: Tunn,
     pub established: bool,
     /// 路径归属：None 表示还没判定，所有报文双路径发送。
@@ -130,6 +135,8 @@ impl WgPeer {
             endpoint: None,
             candidates: Vec::new(),
             relay_allowed: true,
+            tcp_endpoint: None,
+            tcp_tx: None,
             tunn,
             established: false,
             owner: None,

@@ -109,6 +109,15 @@ impl Network {
                 ip: m.ip.to_string(),
                 endpoint: m.endpoint.map(|e| e.to_string()).unwrap_or_default(),
                 ipv6: m.ipv6.map(|v| v.to_string()).unwrap_or_default(),
+                tcp_endpoint: m
+                    .endpoint
+                    .map(|e| format!("{}:{}", e.ip(), m.udp_port))
+                    .or_else(|| {
+                        m.endpoints.iter().find(|e| e.is_ipv6()).map(|e| {
+                            format!("[{}]:{}", e.ip(), m.udp_port)
+                        })
+                    })
+                    .unwrap_or_default(),
                 endpoints: m.endpoints.iter().map(|e| e.to_string()).collect(),
                 is_server: m.run_id == SERVER_NODE_ID,
                 hostname: m.hostname.clone(),
@@ -547,6 +556,7 @@ impl OverlayCoordinator {
                     pubkey: pk,
                     endpoint: crate::overlay::node::parse_endpoint(&p.endpoint).unwrap_or(None),
                     endpoints: vec![],
+                    tcp_endpoint: None,
                     relay_allowed: false,
                 });
                 ips.push(ip);
