@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.7 — 2026-11-13
+
+- Prefer direct for ordinary peers with a 5-second relay grace window; a
+  direct WireGuard handshake response can reclaim a relay-locked peer.
+- The server-node peer is **direct-only** (`relay_allowed = false`) because a
+  server node has no relay registration. This avoids the 0.3.2 outage while
+  still preventing the relay from beating a viable client-to-client direct
+  path.
+- Fixed the remaining test path for relay fallback after the grace window.
+
 ## 0.3.6 — 2026-11-13
 
 - Fixed the real 100% CPU cause: the vendored `smux 0.2.0` `Stream::poll_read`

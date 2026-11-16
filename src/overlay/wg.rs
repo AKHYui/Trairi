@@ -79,12 +79,18 @@ pub fn wg_message_type(datagram: &[u8]) -> Option<u8> {
 /// 才退回双路径让中继接管。不能只看“多久没收到包”——空闲对端本来就不发包，
 /// 误回退会让双路径的重复保活把对端也带到中继上。
 const DIRECT_LOCK_IDLE: Duration = Duration::from_secs(15);
+/// Give a direct path a short head start before accepting relay. A relay
+/// handshake can otherwise arrive first and permanently hide a usable direct
+/// path; the server-node peer is direct-only and never enters this grace.
+const RELAY_GRACE: Duration = Duration::from_secs(5);
 
 /// 一个 WireGuard 对端。
 pub struct WgPeer {
     pub ip: Ipv4Addr,
     pub pubkey: [u8; 32],
     pub endpoint: Option<SocketAddr>,
+    /// Whether relay may be used for this peer.
+    pub relay_allowed: bool,
     tunn: Tunn,
     pub established: bool,
     /// 路径归属：None 表示还没判定，所有报文双路径发送。
@@ -92,6 +98,8 @@ pub struct WgPeer {
     /// 最近一次从各路径收到通过认证的报文。
     direct_rx_at: Option<Instant>,
     relay_rx_at: Option<Instant>,
+    /// First authenticated relay packet; starts the direct grace window.
+    relay_first_rx_at: Option<Instant>,
     /// 最近一次真正发出业务数据（非保活/握手）的时间。
     data_tx_at: Option<Instant>,
     created: std::time::Instant,
@@ -117,11 +125,13 @@ impl WgPeer {
             ip,
             pubkey: peer_public,
             endpoint: None,
+            relay_allowed: true,
             tunn,
             established: false,
             owner: None,
             direct_rx_at: None,
             relay_rx_at: None,
+            relay_first_rx_at: None,
             data_tx_at: None,
             created: Instant::now(),
         }
@@ -236,6 +246,16 @@ impl WgPeer {
     /// 在判定清楚之前两条路都发，谁先带回对端的认证报文，就锁定谁。
     pub fn send_paths(&mut self, relay_available: bool) -> SendPaths {
         self.expire_direct_lock();
+        let relay = relay_available && self.relay_allowed;
+        if self.owner.is_none()
+            && self.endpoint.is_some()
+            && relay
+            && self
+                .relay_first_rx_at
+                .is_some_and(|t| t.elapsed() >= RELAY_GRACE)
+        {
+            self.set_owner(Path::Relay, "直连宽限期结束");
+        }
         match self.owner {
             Some(Path::Direct) if self.endpoint.is_some() => SendPaths {
                 direct: true,
@@ -243,9 +263,9 @@ impl WgPeer {
             },
             Some(Path::Direct) => SendPaths {
                 direct: false,
-                relay: relay_available,
+                relay,
             },
-            Some(Path::Relay) if relay_available => SendPaths {
+            Some(Path::Relay) if relay => SendPaths {
                 direct: false,
                 relay: true,
             },
@@ -256,7 +276,7 @@ impl WgPeer {
             },
             None => SendPaths {
                 direct: self.endpoint.is_some(),
-                relay: relay_available,
+                relay,
             },
         }
     }
@@ -274,14 +294,18 @@ impl WgPeer {
         let now = Instant::now();
         match path {
             Path::Relay => {
+                if !self.relay_allowed { return; }
                 self.relay_rx_at = Some(now);
                 if msg_type.is_some() {
-                    self.set_owner(Path::Relay, "中继收到对端报文");
+                    self.relay_first_rx_at.get_or_insert(now);
+                    if self.endpoint.is_none() {
+                        self.set_owner(Path::Relay, "no direct endpoint");
+                    }
                 }
             }
             Path::Direct => {
                 self.direct_rx_at = Some(now);
-                if self.owner.is_none() && matches!(msg_type, Some(2) | Some(3)) {
+                if self.endpoint.is_some() && matches!(msg_type, Some(2) | Some(3)) {
                     self.set_owner(Path::Direct, "直连收到对端握手响应");
                 }
             }
@@ -434,17 +458,17 @@ mod tests {
     }
 
     #[test]
-    fn relay_packet_locks_relay_and_overrides_direct() {
+    fn relay_packet_does_not_preempt_direct() {
         let mut p = test_peer(ep(5000));
         p.note_inbound(Path::Direct, Some(2));
         assert_eq!(p.owner(), Some(Path::Direct));
 
         // 对端改走中继 -> 我们的回包必须跟着走中继
         p.note_inbound(Path::Relay, Some(1));
-        assert_eq!(p.owner(), Some(Path::Relay));
+        assert_eq!(p.owner(), Some(Path::Direct));
         let paths = p.send_paths(true);
-        assert!(!paths.direct && paths.relay);
-        assert!(p.is_relay_locked());
+        assert!(paths.direct && !paths.relay);
+        assert!(!p.is_relay_locked());
     }
 
     #[test]

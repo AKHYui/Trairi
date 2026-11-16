@@ -59,6 +59,7 @@ async fn two_nodes_exchange_ip_packets() {
             ip: ip_b,
             pubkey: pub_b,
             endpoint: Some(addr_b),
+            relay_allowed: true,
         }],
         None,
     )
@@ -75,6 +76,7 @@ async fn two_nodes_exchange_ip_packets() {
             ip: ip_a,
             pubkey: pub_a,
             endpoint: Some(addr_a),
+            relay_allowed: true,
         }],
         None,
     )
@@ -123,6 +125,7 @@ async fn unknown_destination_is_dropped() {
             ip: Ipv4Addr::new(10, 144, 144, 3),
             pubkey: pub_b,
             endpoint: None,
+            relay_allowed: true,
         }],
         None,
     )
@@ -157,6 +160,7 @@ async fn peer_table_update_keeps_session() {
             ip: ip_b,
             pubkey: pub_b,
             endpoint: None,
+            relay_allowed: true,
         }],
         None,
     )
@@ -170,6 +174,7 @@ async fn peer_table_update_keeps_session() {
                 ip: ip_b,
                 pubkey: pub_b,
                 endpoint: Some("127.0.0.1:12345".parse().unwrap()),
+                relay_allowed: true,
             }],
             &priv_a,
         )
@@ -184,6 +189,7 @@ async fn peer_table_update_keeps_session() {
                 ip: ip_b,
                 pubkey: other,
                 endpoint: None,
+                relay_allowed: true,
             }],
             &priv_a,
         )
@@ -272,6 +278,7 @@ async fn punch_probe_is_sent_to_peer_endpoint() {
             ip: ip_b,
             pubkey: pub_b,
             endpoint: Some(peer_addr),
+            relay_allowed: true,
         }],
         None,
     )
@@ -322,6 +329,7 @@ async fn punch_probe_fixes_stale_peer_address() {
             ip: ip_b,
             pubkey: pub_b,
             endpoint: Some(stale),
+            relay_allowed: true,
         }],
         None,
     )
@@ -377,6 +385,7 @@ async fn subnet_route_forwards_to_advertising_peer() {
             ip: ip_b,
             pubkey: pub_b,
             endpoint: Some(addr_b),
+            relay_allowed: true,
         }],
         None,
     )
@@ -393,6 +402,7 @@ async fn subnet_route_forwards_to_advertising_peer() {
             ip: ip_a,
             pubkey: pub_a,
             endpoint: Some(addr_a),
+            relay_allowed: true,
         }],
         None,
     )
@@ -406,6 +416,7 @@ async fn subnet_route_forwards_to_advertising_peer() {
                 ip: ip_b,
                 pubkey: pub_b,
                 endpoint: Some(addr_b),
+                relay_allowed: true,
             }],
             vec![(lan, ip_b)],
             &priv_a,
@@ -449,6 +460,7 @@ async fn acl_blocks_denied_destination() {
             ip: ip_b,
             pubkey: pub_b,
             endpoint: Some(addr_b),
+            relay_allowed: true,
         }],
         None,
     )
@@ -524,6 +536,7 @@ async fn relay_rescues_when_direct_path_is_dead() {
             ip: ip_b,
             pubkey: pub_b,
             endpoint: Some(dead_b),
+            relay_allowed: true,
         }],
         Some(relay_a),
     )
@@ -540,6 +553,7 @@ async fn relay_rescues_when_direct_path_is_dead() {
             ip: ip_a,
             pubkey: pub_a,
             endpoint: Some(dead_a),
+            relay_allowed: true,
         }],
         Some(relay_b),
     )
@@ -564,6 +578,7 @@ async fn relay_rescues_when_direct_path_is_dead() {
         .expect("设备通道被关闭");
     assert_eq!(back, pkt2);
 
+    tokio::time::sleep(Duration::from_secs(6)).await;
     assert_eq!(node_a.relayed_peers().await, 1, "A 应该锁定中继");
     assert_eq!(node_b.relayed_peers().await, 1, "B 应该锁定中继");
 }

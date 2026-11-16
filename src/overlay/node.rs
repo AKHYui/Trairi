@@ -37,6 +37,9 @@ pub struct PeerSpec {
     pub ip: Ipv4Addr,
     pub pubkey: [u8; 32],
     pub endpoint: Option<SocketAddr>,
+    /// Whether this peer can be reached via the server's TCP relay.
+    /// The server-node peer is direct-only.
+    pub relay_allowed: bool,
 }
 
 type PeerMap = Arc<RwLock<HashMap<Ipv4Addr, Arc<Mutex<WgPeer>>>>>;
@@ -154,6 +157,7 @@ impl NodeHandle {
             {
                 let mut g = peer.lock().await;
                 g.endpoint = spec.endpoint;
+                g.relay_allowed = spec.relay_allowed;
             }
             if let Some(ep) = spec.endpoint {
                 eps.insert(ep, spec.ip);
@@ -209,6 +213,7 @@ pub async fn start_node(
             {
                 let mut g = peer.lock().await;
                 g.endpoint = spec.endpoint;
+                g.relay_allowed = spec.relay_allowed;
             }
             if let Some(ep) = spec.endpoint {
                 eps.insert(ep, spec.ip);

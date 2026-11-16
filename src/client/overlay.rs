@@ -65,6 +65,7 @@ impl OverlayClient {
                 ip,
                 pubkey: pk,
                 endpoint,
+                relay_allowed: !p.is_server,
             });
         }
         let ips: Vec<Ipv4Addr> = specs.iter().map(|s| s.ip).collect();
@@ -198,6 +199,7 @@ pub async fn setup(
                 ip,
                 pubkey: pk,
                 endpoint,
+                relay_allowed: !p.is_server,
             });
             ips.push(ip);
         }

@@ -501,6 +501,7 @@ impl OverlayCoordinator {
                     ip,
                     pubkey: pk,
                     endpoint: crate::overlay::node::parse_endpoint(&p.endpoint).unwrap_or(None),
+                    relay_allowed: false,
                 });
                 ips.push(ip);
             }
