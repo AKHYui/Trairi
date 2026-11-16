@@ -602,7 +602,12 @@ impl OverlayCoordinator {
                 specs.push(crate::overlay::node::PeerSpec {
                     ip,
                     pubkey: pk,
-                    endpoint: crate::overlay::node::parse_endpoint(&p.endpoint).unwrap_or(None),
+                    // The coordinator observes the client's mapping to
+                    // 56000, not to the server-node socket 56002. Using that
+                    // endpoint here makes the server node send WireGuard
+                    // handshakes to the wrong NAT port. The server node learns
+                    // its own peer-reflexive endpoint from incoming punches.
+                    endpoint: None,
                     endpoints: vec![],
                     tcp_endpoint: None,
                     relay_allowed: false,
