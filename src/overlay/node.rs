@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::overlay::device::IpDevice;
@@ -881,22 +881,26 @@ async fn handle_tcp_stream(
 }
 
 async fn connect_tcp_direct(ep: SocketAddr, local_port: u16) -> Result<TcpStream> {
-    // TCP simultaneous-open attempt: use the listener's numeric source port
-    // so both NATs can create a predictable mapping. Fall back to an
-    // ephemeral source when the platform refuses to reuse the port.
-    if let Ok(sock) = TcpSocket::new_v4() {
-        if sock.set_reuseaddr(true).is_ok()
-            && sock.bind(SocketAddr::from(([0, 0, 0, 0], local_port))).is_ok()
-        {
-            if let Ok(stream) = sock.connect(ep).await {
-                return Ok(stream);
-            }
-        }
+    // TCP simultaneous-open attempt: bind the listener's numeric source port
+    // with SO_REUSEADDR/SO_REUSEPORT, then connect. Fall back to an ephemeral
+    // source if the platform refuses to reuse the port.
+    let bound = tokio::task::spawn_blocking(move || -> Result<std::net::TcpStream> {
+        use socket2::{Domain, Protocol, Socket, Type};
+        let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+        sock.set_reuse_address(true)?;
+        #[cfg(unix)]
+        sock.set_reuse_port(true)?;
+        sock.bind(&SocketAddr::from(([0, 0, 0, 0], local_port)).into())?;
+        sock.connect(&ep.into())?;
+        Ok(sock.into())
+    })
+    .await;
+    if let Ok(Ok(std_stream)) = bound {
+        std_stream.set_nonblocking(true)?;
+        return Ok(TcpStream::from_std(std_stream)?);
     }
-    let _ = local_port;
     TcpStream::connect(ep).await.map_err(Into::into)
 }
-
 async fn read_exact_timeout<R: AsyncReadExt + Unpin>(
     r: &mut R,
     buf: &mut [u8],
